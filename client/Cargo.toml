@@ -1,6 +1,6 @@
 [package]
 name = "lua_bridge"
-version = "0.6.0"
+version = "1.0.0"
 description = "Mercenaries 2 Lua bridge ASI: a live REPL and WebSocket into the game's Lua, the OnBoot/OnLoad/OnKey script loader, and the Loader, Tcp and math namespaces"
 edition = "2024"
 license = "MIT"
