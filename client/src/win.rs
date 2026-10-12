@@ -169,7 +169,10 @@ impl Bridge {
     /// Run a loader folder on `l`, logging and mirroring each script's outcome.
     fn run_folder(&self, l: *mut c_void, folder: &str) {
         let mode = self.cfg.loader_source_encoding;
-        let mut prepare = || Ok(());
+        let mut prepare = || {
+        polyfill(l);
+        Ok(())
+    };
         let mut normalize = |path: &Path, bytes: Vec<u8>| normalize_bytes(mode, folder, &path.display().to_string(), &bytes);
         let mut execute = |script: &Script, code: &[u8]| {
             log(&format!("[*] lua_bridge: Loading script ({folder}): {} ({} bytes)", script.rel_path, code.len()));
@@ -346,6 +349,12 @@ impl TickHost for GameTick {
     fn now(&self) -> u32 {
         now()
     }
+    fn usable(&self) -> bool {
+        rt::lua_state_ok(self.l)
+    }
+    fn begin_batch(&mut self) {
+        polyfill(self.l);
+    }
     fn exec(&mut self, code: &[u8]) -> Vec<u8> {
         unsafe { rt::lua_exec(self.l, code, RESULT_CAP) }.text
     }
@@ -361,6 +370,15 @@ impl TickHost for GameTick {
     }
 }
 
+/// Fill in `math.pi`, `math.huge` and `assert` where `_G` lacks them. Run on each reported state and before
+/// each batch and folder, since the game can rebuild `_G` after a state was captured.
+fn polyfill(l: *mut c_void) {
+    let r = unsafe { rt::lua_exec(l, POLYFILL.as_bytes(), RESULT_CAP) };
+    if r.status != rt::EXEC_OK {
+        log(&format!("[!] lua_bridge: the polyfill failed on L={l:p}: {}", String::from_utf8_lossy(&r.text)));
+    }
+}
+
 unsafe extern "C" fn on_tick(l: *mut c_void, _ud: *mut c_void) {
     let b = bridge();
     b.pump.tick(&b.queue, now(), || GameTick { l });
@@ -369,10 +387,7 @@ unsafe extern "C" fn on_tick(l: *mut c_void, _ud: *mut c_void) {
 unsafe extern "C" fn on_state(l: *mut c_void, is_new_cycle: c_int, _ud: *mut c_void) {
     let b = bridge();
     log(&format!("[+] lua_bridge: Lua VM captured: L={l:p}"));
-    let r = unsafe { rt::lua_exec(l, POLYFILL.as_bytes(), RESULT_CAP) };
-    if r.status != rt::EXEC_OK {
-        log(&format!("[!] lua_bridge: the polyfill failed on L={l:p}: {}", String::from_utf8_lossy(&r.text)));
-    }
+    polyfill(l);
     let actions = b.cycle.on_state(is_new_cycle != 0, b.phase.milestone_seen(), b.flags);
     if actions.rearm {
         let (was, listening) = b.phase.rearm();
