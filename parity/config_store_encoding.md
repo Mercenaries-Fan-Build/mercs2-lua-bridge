@@ -7,13 +7,13 @@ Gate (scratch crate): `cargo test` exit 0 (36 tests), `cargo clippy --all-target
 
 | Behaviour | C lines | Rust item | Test |
 |---|---|---|---|
-| Default file text written when the ini is missing (byte-identical to the C literal, verified by compiling the literal and `cmp`) | 4907-5003 | `config::DEFAULT_INI` | `default_ini_carries_every_key_once`, `default_ini_em_dashes_are_utf8_bytes` |
+| Default file text written when the ini is missing: the C's keys and defaults (4907-5003) without `loader_delay_ms` and `stack_diag`, comments rewritten for this bridge | 4907-5003 | `config::DEFAULT_INI` | `default_ini_carries_every_key_once`, `default_ini_is_ascii` |
 | Per-key defaults (globals) | 557-605 | `impl Default for Config` | `default_ini_parses_to_default`, `empty_file_is_all_defaults` |
 | Write the default only when no file exists; an existing file is never touched | 5005-5013 | `config::ensure_default` | `ensure_default_writes_once_and_load_reads_it` |
 | Ensure-default then parse | 5015-5020 | `config::load` | `ensure_default_writes_once_and_load_reads_it` |
 | Section-blind INI parse via `m2_ini_parse` rules | 5019, 4854-4857 | `config::parse` (uses `mercs2_formats::ini::parse`) | `keys_match_case_insensitively_and_last_value_wins`, `crlf_file_parses` |
 | Keys case-insensitive (`_stricmp`), last value wins | 4861-4901 | `config::apply` | `keys_match_case_insensitively_and_last_value_wins` |
-| Unknown keys ignored | 4858-4902 (no else branch) | `config::apply` | `unknown_keys_are_ignored` |
+| Unknown keys are a startup error naming the key (the C ignored them: 4858-4902 has no else branch) | 4858-4902 | `config::apply` | `unknown_keys_are_errors` |
 | All 15 keys read into typed fields | 4861-4901 | `config::Config` | `every_key_is_read` |
 | `loader_source_encoding` words `auto` / `off` / `raw` | 4892-4898 | `config::EncodingMode`, `parse_encoding` | `encoding_words` |
 | UTF-8 BOM stripped in every mode, with its log line | 2093-2099 | `encoding::normalize`, `Normalized::log_lines` | `utf8_bom_is_stripped_in_both_modes` |
