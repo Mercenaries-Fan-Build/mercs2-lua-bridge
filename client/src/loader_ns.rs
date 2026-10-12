@@ -18,7 +18,7 @@
 //! Every string goes back to Lua through `push_string`, so it is an interned Lua string and
 //! compares with `==` like any other.
 
-use crate::lua_api::{Lua, Ret, TBOOLEAN, TNUMBER, TSTRING, type_name};
+use mercs2_formats::mod_runtime::lua::{Lua, Ret, TBOOLEAN, TNUMBER, TSTRING, type_name};
 use crate::store::Value;
 use std::cell::Cell;
 
@@ -342,7 +342,7 @@ pub fn load_file<L: Lua, H: LoaderHost>(l: &mut L, host: &H) -> Ret {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::lua_api::fake::{FakeLua, Val, s};
+    use mercs2_formats::mod_runtime::lua::fake::{FakeLua, Val, s};
     use crate::store::{KEY_MAX, STR_MAX, Store};
     use std::cell::RefCell;
 
