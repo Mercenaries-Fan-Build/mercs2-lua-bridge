@@ -8,6 +8,7 @@ cd "$client"
 cargo build --release --target i686-pc-windows-gnu
 dll="target/i686-pc-windows-gnu/release/lua_bridge.dll"
 asi="../src/lua_bridge.asi"
+mkdir -p ../src
 if [[ -f "$asi" ]]; then
   echo "before: $(shasum -a 256 "$asi")"
 fi
