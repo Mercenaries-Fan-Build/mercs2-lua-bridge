@@ -15,101 +15,62 @@ use mercs2_formats::ini;
 
 /// The file written next to the ASI when no settings file exists.
 pub const DEFAULT_INI: &str = "; lua-bridge configuration.
-; Drop this next to lua_bridge.asi in your game folder.
+; Read from the folder lua_bridge.asi is in. A key the bridge does not know, or a value it
+; cannot read, stops the game with a message naming the key.
 
 [repl]
-; Host to bind the REPL listener on. 127.0.0.1 = localhost-only,
-; which is what you want unless you're routing through a tunnel.
+; Address the REPL listener binds. 127.0.0.1 = this machine only.
 host = 127.0.0.1
 
-; Port for the REPL listener. Matches the default the upstream
-; tools/lua_repl.py and tools/lua_console.py expect.
+; Port of the REPL listener (raw TCP and WebSocket share it).
 port = 27050
 
 [loader]
-; Enable or disable the native Lua Loader (1 = enabled, 0 = disabled)
+; The script loader as a whole (1 = on, 0 = off).
 loader_enabled = 1
 
-; Load scripts in scripts/OnBoot/ once captured (1 = enabled, 0 = disabled)
+; Run scripts/OnBoot/ when the game's first Lua state is captured.
 loader_onboot = 1
 
-; Load scripts in scripts/OnLoad/ once game enters world (1 = enabled, 0 = disabled)
+; Run scripts/OnLoad/ when the world has finished loading.
 loader_onload = 1
 
-; DEPRECATED in v0.5.0 and now a no-op. ExecuteLuaFolder runs ON the game
-; thread, so sleeping between scripts could never let the engine settle
-; the way this name suggests -- the engine IS the thread being slept. All
-; it bought was a delay * (scripts-1) freeze on top of every load. Still
-; parsed so existing .ini files stay valid.
-loader_delay_ms = 50
-
-; Minimum time (in milliseconds) between the SAME OnKey script re-firing.
-; Prevents human hammer-tapping the hotkey from queueing multiple back-to-back
-; runs of the same script, which can crash non-reentrant scripts (menus,
-; state-mutating cheats, etc). First throttle per script is logged so users
-; can see it kick in; subsequent throttles are silent to avoid log spam.
-; Set to 0 to disable the cooldown entirely.
+; Minimum time in milliseconds between two fires of the SAME OnKey script, so a
+; hammered hotkey cannot queue back-to-back runs of a script that is not reentrant.
+; The first throttle per script is logged. 0 = no cooldown.
 loader_onkey_cooldown_ms = 250
 
-; Watchdog: if the queue has pending chunks and no pump progress happens
-; for this many milliseconds (while the game is actively running detours),
-; a background thread force-resets the bridge's stuck-state candidates
-; (hotWork, t_inBridgeExec, g_LuaState, seen-set) and logs a comprehensive
-; diagnostic line. Set to 0 to disable the watchdog entirely.
+; Watchdog: report in lua_bridge.log when a chunk has run for longer than this many
+; milliseconds, or when chunks are queued but nothing runs them. 0 = off.
 watchdog_stuck_ms = 8000
 
-; WebSocket transport (1 = enabled, 0 = disabled). When enabled, the same
-; listener speaks either raw TCP (existing lua_repl.py / lua_console.py
-; protocol) or WebSocket \u{2014} auto-detected from the first bytes. Browser
-; clients (tools/ess-bridge.js) connect via WS and receive structured
-; JSON messages: {type:\"ack\"}, {type:\"log\"} (mirrors Loader.Printf),
-; and {type:\"ws\"} (the hidden Loader.WsSend channel). Disable this if
-; you want the bridge locked to raw-TCP only.
+; Accept WebSocket clients on the REPL port as well as raw TCP (told apart by the
+; first bytes). WebSocket clients get {type:\"ack\"}, {type:\"log\"} (Loader.Printf
+; and loader results) and {type:\"ws\"} (Loader.WsSend). 0 = raw TCP only.
 websocket_enabled = 1
 
-; --- added in v0.5.0 ---
-
-; Drop OnKey hotkey fires while the game is NOT the foreground window.
-; Before 0.5.0 hotkeys fired regardless of focus, so pressing F5 in a
-; browser (refresh) or F11 (fullscreen) silently ran your game scripts in
-; the background. Loader.PopKeyEvents has always been focus-gated; this
-; makes the .lua-firing path agree with it. 0 = old behavior.
+; Ignore OnKey hotkeys while the game is not the foreground window, so F5 in a
+; browser does not run your scripts. Loader.PopKeyEvents is always focus-gated.
 loader_onkey_require_focus = 1
 
-; Require the held modifier set to match a binding EXACTLY, so you can
-; bind `F5` and `ctrl+F5` to two different scripts. Side effect: a plain
-; `F5` binding no longer fires while ctrl/shift/alt is held. 0 = ignore
-; modifiers entirely (pre-0.5.0 matching).
+; A binding fires only when the held ctrl/shift/alt set matches it exactly, so F5
+; and ctrl+F5 can run different scripts. 0 = ignore which modifiers are held.
 loader_onkey_exact_modifiers = 1
 
-; Re-run OnBoot/OnLoad after a main-menu round-trip. The engine wipes _G
-; when you exit to the menu and builds fresh Lua VMs on the next load, so
-; without this every OnLoad-installed framework stays dead until you
-; restart the game. Detected by watching for a world-load-start marker
-; after the world had already finished loading. 0 = once per process.
+; Re-run OnBoot and OnLoad (and rescan OnKey) after a main-menu round-trip: the
+; game wipes _G there and builds fresh Lua states for the next load. 0 = once per
+; game session.
 loader_rearm_on_menu = 1
 
-; Track the world-load phase ladder (0..20) so Loader.GetLoadPhase()
-; works and the re-arm above can see a load restart. Costs a substring
-; scan per captured game log line on the detour path. 0 removes that cost
-; but disables GetLoadPhase and the menu re-arm.
+; Follow the world-load phase ladder (0..20) for Loader.GetLoadPhase(). The game's
+; log lines are only read while a load is in progress. 0 = GetLoadPhase reports none.
 loader_track_phase = 1
 
-; Source-encoding normalization for .lua files and WS-submitted chunks.
-; The engine's text renderers consume single-byte CP1252, so a UTF-8
-; source file renders \"Mobius\" (o-umlaut) as \"MA-bius\". auto strips BOMs
-; and transcodes UTF-8 -> CP1252 only when the bytes are valid UTF-8 AND
-; contain a byte >= 0x80, so pure-ASCII and already-ANSI files are never
-; touched. off = raw bytes through (BOMs are still stripped, because a
-; BOM is an unconditional Lua syntax error).
+; Source encoding of .lua files and REPL/WebSocket chunks. The game draws text as
+; single-byte CP1252: auto strips a UTF-8 byte-order mark and converts UTF-8 text with
+; non-ASCII characters to CP1252, leaving ASCII and CP1252 files alone. off = only
+; the byte-order mark is stripped. A UTF-16 file is refused either way.
 loader_source_encoding = auto
-
-; One-shot Lua stack-layout dump on the first chunk execution. This build
-; of Lua leaves a table where stock pcall leaves its boolean status, and
-; the status is not in the window the bridge reads \u{2014} this dump exists to
-; find where it went, and to confirm it is NOT being written into the
-; engine's own stack frame. Costs one burst of log lines per process.
-stack_diag = 1
 ";
 
 /// How `.lua` source bytes are prepared before the game's Lua compiles them (see `crate::encoding`).
@@ -134,8 +95,6 @@ pub struct Config {
     pub loader_onboot: bool,
     /// `loader_onload`: run `scripts/OnLoad/` once the world has loaded.
     pub loader_onload: bool,
-    /// `loader_delay_ms`: read and range-checked; it drives nothing.
-    pub loader_delay_ms: u32,
     /// `loader_onkey_cooldown_ms`: minimum gap between two fires of the same OnKey script; 0 = no gap.
     pub loader_onkey_cooldown_ms: u32,
     /// `watchdog_stuck_ms`: how long the queue may sit without progress before the watchdog acts; 0 = off.
@@ -152,8 +111,6 @@ pub struct Config {
     pub loader_track_phase: bool,
     /// `loader_source_encoding`: `auto` or `raw`/`off`.
     pub loader_source_encoding: EncodingMode,
-    /// `stack_diag`: the one-shot Lua stack-layout dump.
-    pub stack_diag: bool,
 }
 
 impl Default for Config {
@@ -165,7 +122,6 @@ impl Default for Config {
             loader_enabled: true,
             loader_onboot: true,
             loader_onload: true,
-            loader_delay_ms: 50,
             loader_onkey_cooldown_ms: 250,
             watchdog_stuck_ms: 8000,
             websocket_enabled: true,
@@ -174,7 +130,6 @@ impl Default for Config {
             loader_rearm_on_menu: true,
             loader_track_phase: true,
             loader_source_encoding: EncodingMode::Auto,
-            stack_diag: true,
         }
     }
 }
@@ -184,6 +139,8 @@ impl Default for Config {
 pub enum ConfigError {
     /// A known key carries a value that does not parse as that key's type.
     InvalidValue { key: String, value: String, expected: &'static str },
+    /// A key the bridge does not read: a typo, or a key an older version had.
+    UnknownKey { key: String },
     /// The file is larger than the INI reader accepts (`mercs2_formats::ini::MAX_FILE`).
     TooLarge { len: usize },
 }
@@ -194,6 +151,11 @@ impl fmt::Display for ConfigError {
             ConfigError::InvalidValue { key, value, expected } => {
                 write!(f, "lua_bridge.ini: `{key}` = `{value}` is not valid; expected {expected}")
             }
+            ConfigError::UnknownKey { key } => write!(
+                f,
+                "lua_bridge.ini: `{key}` is not a setting this version reads; remove it (the default file the \
+                 bridge writes when lua_bridge.ini is missing lists every setting)"
+            ),
             ConfigError::TooLarge { len } => {
                 write!(f, "lua_bridge.ini: the file is {len} bytes; the INI reader accepts at most {} bytes", ini::MAX_FILE)
             }
@@ -305,8 +267,6 @@ fn apply(cfg: &mut Config, key: &[u8], value: &[u8]) -> Result<(), ConfigError> 
         cfg.loader_onboot = parse_bool(key, value)?;
     } else if is("loader_onload") {
         cfg.loader_onload = parse_bool(key, value)?;
-    } else if is("loader_delay_ms") {
-        cfg.loader_delay_ms = parse_ms(key, value)?;
     } else if is("loader_onkey_cooldown_ms") {
         cfg.loader_onkey_cooldown_ms = parse_ms(key, value)?;
     } else if is("watchdog_stuck_ms") {
@@ -323,8 +283,8 @@ fn apply(cfg: &mut Config, key: &[u8], value: &[u8]) -> Result<(), ConfigError> 
         cfg.loader_track_phase = parse_bool(key, value)?;
     } else if is("loader_source_encoding") {
         cfg.loader_source_encoding = parse_encoding(key, value)?;
-    } else if is("stack_diag") {
-        cfg.stack_diag = parse_bool(key, value)?;
+    } else {
+        return Err(ConfigError::UnknownKey { key: String::from_utf8_lossy(key).into_owned() });
     }
     Ok(())
 }
@@ -379,7 +339,6 @@ mod tests {
                 "loader_enabled",
                 "loader_onboot",
                 "loader_onload",
-                "loader_delay_ms",
                 "loader_onkey_cooldown_ms",
                 "watchdog_stuck_ms",
                 "websocket_enabled",
@@ -388,26 +347,23 @@ mod tests {
                 "loader_rearm_on_menu",
                 "loader_track_phase",
                 "loader_source_encoding",
-                "stack_diag",
             ]
         );
     }
 
     #[test]
-    fn default_ini_em_dashes_are_utf8_bytes() {
-        let dash = "\u{2014}".as_bytes();
-        assert_eq!(dash, [0xE2, 0x80, 0x94]);
-        assert_eq!(DEFAULT_INI.as_bytes().windows(3).filter(|w| *w == dash).count(), 2);
-        assert!(DEFAULT_INI.ends_with("stack_diag = 1\n"));
+    fn default_ini_is_ascii() {
+        assert!(DEFAULT_INI.is_ascii());
         assert!(DEFAULT_INI.starts_with("; lua-bridge configuration.\n"));
+        assert!(DEFAULT_INI.ends_with("loader_source_encoding = auto\n"));
     }
 
     #[test]
     fn every_key_is_read() {
         let text = "host=0.0.0.0\nport=1\nloader_enabled=0\nloader_onboot=off\nloader_onload=FALSE\n\
-                    loader_delay_ms=0\nloader_onkey_cooldown_ms=7\nwatchdog_stuck_ms=2147483647\n\
+                    loader_onkey_cooldown_ms=7\nwatchdog_stuck_ms=2147483647\n\
                     websocket_enabled=Off\nloader_onkey_require_focus=0\nloader_onkey_exact_modifiers=0\n\
-                    loader_rearm_on_menu=0\nloader_track_phase=0\nloader_source_encoding=raw\nstack_diag=0\n";
+                    loader_rearm_on_menu=0\nloader_track_phase=0\nloader_source_encoding=raw\n";
         let cfg = parse(text.as_bytes()).unwrap();
         assert_eq!(
             cfg,
@@ -417,7 +373,6 @@ mod tests {
                 loader_enabled: false,
                 loader_onboot: false,
                 loader_onload: false,
-                loader_delay_ms: 0,
                 loader_onkey_cooldown_ms: 7,
                 watchdog_stuck_ms: 2_147_483_647,
                 websocket_enabled: false,
@@ -426,7 +381,6 @@ mod tests {
                 loader_rearm_on_menu: false,
                 loader_track_phase: false,
                 loader_source_encoding: EncodingMode::Raw,
-                stack_diag: false,
             }
         );
     }
@@ -438,8 +392,15 @@ mod tests {
     }
 
     #[test]
-    fn unknown_keys_are_ignored() {
-        assert_eq!(parse(b"some_other_tool = banana\n").unwrap(), Config::default());
+    fn unknown_keys_are_errors() {
+        for key in ["some_other_tool", "stack_diag", "loader_delay_ms", "prot"] {
+            assert_eq!(
+                err_of(&format!("{key} = 1\n")),
+                ConfigError::UnknownKey { key: key.into() },
+                "{key}"
+            );
+        }
+        assert!(err_of("stack_diag = 1").to_string().contains("`stack_diag` is not a setting this version reads"));
     }
 
     #[test]
@@ -451,13 +412,13 @@ mod tests {
     #[test]
     fn bool_keys_accept_exact_words_only() {
         for (v, want) in [("1", true), ("TRUE", true), ("On", true), ("0", false), ("False", false), ("OFF", false)] {
-            assert_eq!(parse(format!("stack_diag={v}").as_bytes()).unwrap().stack_diag, want, "{v}");
+            assert_eq!(parse(format!("websocket_enabled={v}").as_bytes()).unwrap().websocket_enabled, want, "{v}");
         }
         for v in ["2", "yes", "no", "", "-1", "01", "1x", "enabled"] {
-            let e = err_of(&format!("stack_diag={v}"));
+            let e = err_of(&format!("websocket_enabled={v}"));
             assert_eq!(
                 e,
-                ConfigError::InvalidValue { key: "stack_diag".into(), value: v.into(), expected: BOOL_EXPECTED },
+                ConfigError::InvalidValue { key: "websocket_enabled".into(), value: v.into(), expected: BOOL_EXPECTED },
                 "{v:?}"
             );
         }
@@ -481,7 +442,7 @@ mod tests {
             ("port", "27050x"),
             ("port", "+27050"),
             ("port", "-1"),
-            ("loader_delay_ms", "-5"),
+            ("loader_onkey_cooldown_ms", "-5"),
             ("loader_onkey_cooldown_ms", "fast"),
             ("watchdog_stuck_ms", "2147483648"),
             ("watchdog_stuck_ms", ""),
