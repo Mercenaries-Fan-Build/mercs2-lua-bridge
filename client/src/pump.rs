@@ -2,7 +2,9 @@
 //! a frame and is skipped by the SDK while a chunk runs on that thread.
 //!
 //! The fast path is two atomic loads: the queue's pending count and whether OnLoad is due. With work,
-//! the pump runs OnLoad's scripts first (once per load cycle, when the world-loaded milestone has been
+//! the tick's state is checked first: a tick can carry a state that has since ended, and work is only
+//! taken for a usable one, so nothing is lost on a bad tick. Then the batch is prepared (the polyfill:
+//! the game can rebuild `_G` after a state was captured), and the pump runs OnLoad's scripts first (once per load cycle, when the world-loaded milestone has been
 //! seen), then every queued chunk, and routes each result: `lua_bridge.log`, the raw-TCP session that
 //! asked, and for a loader-queued script (OnKey) the live log feed. The timestamps it keeps are what the
 //! watchdog reads.
@@ -24,6 +26,10 @@ pub struct Pump {
 /// What a tick hands the pump: the clock, the executor and the folder runner, all on the game thread.
 pub trait TickHost {
     fn now(&self) -> u32;
+    /// Whether the tick's state can run chunks right now.
+    fn usable(&self) -> bool;
+    /// Prepare the state for a batch; runs once per tick that has work, before any of it.
+    fn begin_batch(&mut self);
     /// Run one chunk on the tick's state; the result line (`[ok]…`, `[runtime]…`, …).
     fn exec(&mut self, code: &[u8]) -> Vec<u8>;
     /// Run the OnLoad folder on the tick's state.
@@ -75,6 +81,10 @@ impl Pump {
         }
         self.last_attempt.store(stamp(now), Ordering::Relaxed);
         let mut host = host();
+        if !host.usable() {
+            return;
+        }
+        host.begin_batch();
         if self.onload_due.swap(false, Ordering::AcqRel) {
             self.timed(host.now(), || host.run_onload());
         }
@@ -114,6 +124,7 @@ mod tests {
         clock: Cell<u32>,
         events: RefCell<Vec<String>>,
         built: Cell<u32>,
+        unusable: Cell<bool>,
     }
 
     struct Host<'a>(&'a Record);
@@ -122,6 +133,12 @@ mod tests {
         fn now(&self) -> u32 {
             self.0.clock.set(self.0.clock.get() + 5);
             self.0.clock.get()
+        }
+        fn usable(&self) -> bool {
+            !self.0.unusable.get()
+        }
+        fn begin_batch(&mut self) {
+            self.0.events.borrow_mut().push("begin".into());
         }
         fn exec(&mut self, code: &[u8]) -> Vec<u8> {
             self.0.events.borrow_mut().push(format!("exec {}", String::from_utf8_lossy(code)));
@@ -170,6 +187,7 @@ mod tests {
         assert_eq!(
             *r.events.borrow(),
             [
+                "begin",
                 "onload",
                 "exec a",
                 "[+] lua_bridge: Script executed. Result: [ok]\ta",
@@ -196,6 +214,24 @@ mod tests {
         let r = Record::default();
         p.tick(&q, 10, || host(&r));
         assert_eq!(q.take_output(), b"[ok]\t1\n<<<END>>>\n");
+    }
+
+    #[test]
+    fn an_unusable_state_takes_nothing_and_the_next_usable_tick_does() {
+        let (log, _) = recording_log();
+        let q = Queue::new(log);
+        let p = Pump::new();
+        q.push(b"a".to_vec(), Origin::Ws);
+        p.schedule_onload();
+        let r = Record::default();
+        r.unusable.set(true);
+        p.tick(&q, 10, || host(&r));
+        assert!(r.events.borrow().is_empty(), "nothing ran on the unusable state");
+        assert_eq!(q.pending(), 1, "the chunk is still queued");
+        r.unusable.set(false);
+        p.tick(&q, 20, || host(&r));
+        assert_eq!(r.events.borrow()[..3], ["begin", "onload", "exec a"]);
+        assert_eq!(q.pending(), 0);
     }
 
     #[test]
