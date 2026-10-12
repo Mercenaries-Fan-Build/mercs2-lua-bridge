@@ -44,4 +44,5 @@ that covers it. Fixes and deliberate differences are listed in each table and su
 - **The watchdog reports and does not reset.** The pump's gate is the queue's own pending count, so there
   is no hot-work flag to raise; the C reset's other targets (the captured state, the seen ring, the TLS
   exec flag) are m2-sdk.dll's or no longer exist.
-- **`stack_diag`** is read and has no effect: the stack diagnostics were part of the C executor.
+- **`stack_diag` and `loader_delay_ms` are removed** (the stack diagnostics were part of the C executor; the
+  delay was a no-op since 0.5.0), and an unknown key is a startup error.
