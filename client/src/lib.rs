@@ -7,7 +7,6 @@ pub mod encoding;
 pub mod folders;
 pub mod keys;
 pub mod loader_ns;
-pub mod lua_api;
 pub mod math_ns;
 pub mod onkey;
 pub mod phase;
