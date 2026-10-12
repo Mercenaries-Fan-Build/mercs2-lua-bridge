@@ -19,8 +19,9 @@ Several mods can now use Lua together without hooking the same functions twice.
   instead of starting a bridge with some hooks missing.
 - The load-phase scan listens to the game's log only while a load is in progress, and costs nothing
   during gameplay.
-- `stack_diag` no longer does anything (chunks run in m2-sdk.dll); like `loader_delay_ms`, it is still
-  read so existing files stay valid.
+- `loader_delay_ms` (a no-op since 0.5.0) and `stack_diag` (a diagnostic of the old executor) are removed.
+  Delete them from an existing `lua_bridge.ini`: a key the bridge does not know now stops the game with a
+  message naming it.
 
 ### Fixes
 
@@ -31,6 +32,7 @@ Several mods can now use Lua together without hooking the same functions twice.
 - `Tcp.Send` checks that `port` is a number, accepts `localhost`, and gives up on a connect after 500 ms
   as well as on a send.
 - `Loader.SaveVar(key, "")` stores the empty string; it was ignored.
+- `Loader.SaveVar(key, nil)` deletes the key; it was ignored, so the old value stayed.
 
 **Hotkeys (OnKey)**
 - A binding to a bare `shift`, `ctrl` or `alt` fires; with exact modifiers it never could.
@@ -71,15 +73,16 @@ Several mods can now use Lua together without hooking the same functions twice.
 **Configuration (`lua_bridge.ini`)**
 - An unreadable `host`, a port outside 1–65535, a negative time, or a switch other than
   `0/1/true/false/on/off` stops the game with a message naming the key; the bridge used to start with a
-  different value (a bad `host` bound every interface).
+  different value (a bad `host` bound every interface). So does a key it does not know, which it used to
+  ignore (a typo silently kept the default).
 
 ### Changed behaviour
 
 These were silent before and now raise a Lua error (catch it with `pcall` where a script expects to
 continue):
 - a missing or wrongly typed argument to any `Loader`, `Tcp` or `math` function;
-- `Loader.SaveVar` with a value that is not a number, string or boolean (including `nil`), or a key or
-  value the file cannot hold;
+- `Loader.SaveVar` with no value or one that is not a number, string, boolean or `nil`, or a key or value
+  the file cannot hold;
 - `Loader.IsKeyDown` with a key outside 0–255;
 - `Loader.LoadFile` with a path outside `scripts/` or from inside another `LoadFile` (it returned
   `false`);
