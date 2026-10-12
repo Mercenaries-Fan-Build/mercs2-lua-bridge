@@ -73,6 +73,13 @@ impl Store {
         Ok(())
     }
 
+    /// Delete `key`; whether it was present. The other entries keep their order.
+    pub fn remove(&mut self, key: &[u8]) -> bool {
+        let before = self.entries.len();
+        self.entries.retain(|(k, _)| k != key);
+        self.entries.len() != before
+    }
+
     /// Write every entry to `<path>.tmp`, flush it to disk, then rename it over `path`, so an interrupted
     /// save leaves the previous file whole.
     pub fn persist(&self) -> Result<(), String> {
@@ -535,6 +542,25 @@ mod tests {
             other => panic!("{other:?}"),
         }
         assert_eq!(back.get(b"absent"), None);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn remove_deletes_one_key_and_keeps_the_order() {
+        let dir = std::env::temp_dir().join(format!("lb_store_remove_{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("lua_loader_data.ini");
+        let _ = fs::remove_file(&path);
+        let mut st = Store::load(&path).unwrap();
+        st.set(b"a", Value::Number(1.0)).unwrap();
+        st.set(b"b", Value::Bool(true)).unwrap();
+        st.set(b"c", Value::Str(b"x".to_vec())).unwrap();
+        assert!(st.remove(b"b"));
+        assert!(!st.remove(b"b"), "already gone");
+        st.persist().unwrap();
+        let back = Store::load(&path).unwrap();
+        assert_eq!(back.entries().iter().map(|(k, _)| k.as_slice()).collect::<Vec<_>>(), [b"a".as_slice(), b"c"]);
+        assert_eq!(back.get(b"b"), None);
         fs::remove_dir_all(&dir).unwrap();
     }
 }
