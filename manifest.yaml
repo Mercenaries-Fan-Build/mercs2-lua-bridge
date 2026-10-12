@@ -1,0 +1,29 @@
+format: 2
+
+shipment:
+  name: lua-bridge
+  title: Lua Bridge
+  version: 0.6.0
+  target: retail
+  authors: [loganw234, Mercenaries Fan Build]
+  description: A live Lua REPL and WebSocket into the running game, the OnBoot/OnLoad/OnKey script loader, and the Loader, Tcp and math Lua namespaces.
+  license: MIT
+  tags: [lua, scripting, repl, loader, framework]
+
+load:
+  requires:
+    # The ASI imports m2-sdk.dll: its Lua host (the captured states, the namespaces, the chunk executor,
+    # the game-thread tick) and its log stream. Without the DLL Windows refuses to load the ASI.
+    - { shipment: m2-sdk, version: "^0.4" }
+
+# The C build of this bridge, installed by hand before it was a Shipment.
+supersedes:
+  - { dest: scripts, file: lua_bridge_DEV.asi }
+
+contributions:
+  # The bridge ASI (built from client/ by client/scripts/build_asi.sh). It hooks nothing itself: every
+  # detour it relies on is m2-sdk.dll's, so it touches no game address.
+  - kind: native_hook
+    target: retail
+    plugin: src/lua_bridge.asi
+    touches: []
