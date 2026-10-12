@@ -18,6 +18,7 @@ Source: `mods/lua-bridge-DEV/lua_bridge_DEV.c` (v0.5.4) and `sdk/m2/m2_luastack.
 | ClearKeyEvents: empties ring, returns nothing | 3102-3111 | `clear_key_events` | `clear_key_events_empties_the_ring_and_returns_nothing` |
 | IsGameFocused: foreground window's PID is ours | 3122-3131, 2484-2491 | `is_game_focused` | `is_game_focused_returns_a_boolean` |
 | SaveVar: number/boolean/string with type kept, persisted at once | 3394-3433 | `save_var` -> `LoaderHost::save_var` (`store::Store`) | `save_and_load_var_round_trip_each_type` |
+| SaveVar(key, nil) deletes the key and persists (the C ignored nil, 3426-3428) | 3426-3428 | `save_var` -> `LoaderHost::delete_var` (`Store::remove`) | `save_var_nil_deletes_the_key` |
 | LoadVar: saved type back, nil when missing | 3437-3479 | `load_var` | `save_and_load_var_round_trip_each_type` |
 | GetLoadPhase: index + name, `-1, "none"` before a load | 3497-3518 | `get_load_phase`, `LoaderHost::load_phase` | `get_load_phase_returns_index_and_plain_string_name` |
 | LoadFile: path refused if empty, `X:`, leading `\` or `/`, or containing `..` | 3557-3560 | `check_script_path` | `load_file_refuses_paths_outside_scripts` |
