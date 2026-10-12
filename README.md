@@ -66,7 +66,7 @@ A chunk's own result is not sent back over the WebSocket; a script that wants to
 | `Loader.PopKeyEvents()` | Every key pressed since the last call, one byte per press, oldest first (`""` when none). Filled by a 60 Hz sampler into a 128-press ring; presses are ignored while the game is not the foreground window. |
 | `Loader.ClearKeyEvents()` | Empties the ring. |
 | `Loader.IsGameFocused()` | Whether the foreground window belongs to the game. |
-| `Loader.SaveVar(key, value)` | Saves a number, string or boolean under `key` in `scripts/lua_loader_data.ini`, at once. Keys are one flat namespace: prefix them with your script's name. |
+| `Loader.SaveVar(key, value)` | Saves a number, string or boolean under `key` in `scripts/lua_loader_data.ini`, at once; `nil` deletes the key. Keys are one flat namespace: prefix them with your script's name. |
 | `Loader.LoadVar(key)` | The saved value, with its type, or `nil`. |
 | `Loader.GetLoadPhase()` | `index, name` on the 0–20 world-load ladder, `-1, "none"` before a load is seen; `11 "Player spawn"` and `20 "World fully loaded (GlobalExit)"` are the useful checkpoints. Starts again on each load. Needs `loader_track_phase = 1`. |
 | `Loader.LoadFile(relPath)` | Runs `scripts/<relPath>` on the current state and returns `true`, or `false` when the file does not exist. Errors inside the file are logged and sent on the feed, not raised. The path must stay inside `scripts/`, and `LoadFile` cannot be nested. |
@@ -147,8 +147,8 @@ same step applies to REPL and WebSocket chunks. `loader_source_encoding = off` t
 
 ## Configuration (`scripts/lua_bridge.ini`)
 
-Written with these defaults when missing. A value the bridge cannot read stops the game with a message
-naming the key.
+Written with these defaults when missing. A key the bridge does not know, or a value it cannot read, stops
+the game with a message naming the key.
 
 ```ini
 [repl]
@@ -159,7 +159,6 @@ port = 27050
 loader_enabled = 1
 loader_onboot = 1
 loader_onload = 1
-loader_delay_ms = 50                 ; no effect, still read
 loader_onkey_cooldown_ms = 250
 loader_onkey_require_focus = 1
 loader_onkey_exact_modifiers = 1
@@ -168,8 +167,10 @@ loader_track_phase = 1
 loader_source_encoding = auto        ; auto | off
 watchdog_stuck_ms = 8000             ; 0 turns the watchdog off
 websocket_enabled = 1
-stack_diag = 1                       ; no effect, still read
 ```
+
+`loader_delay_ms` and `stack_diag` are gone: the first did nothing since 0.5.0, the second drove a
+diagnostic of the old executor. Delete them from an existing `lua_bridge.ini`.
 
 The watchdog checks every 2 s and writes to `lua_bridge.log` when a chunk has been running for longer
 than `watchdog_stuck_ms`, or when chunks are queued but nothing runs them.
