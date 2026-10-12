@@ -10,7 +10,7 @@
 //! (`state = state * 214013 + 2531011`, output `(state >> 16) & 0x7fff`, `RAND_MAX` 32767), seeded
 //! with 1 on each thread until `math.randomseed` sets it.
 
-use crate::lua_api::{Lua, Ret, TNUMBER, type_name};
+use mercs2_formats::mod_runtime::lua::{Lua, Ret, TNUMBER, type_name};
 use std::cell::Cell;
 
 /// The names this module registers into `math`, in registration order.
@@ -287,7 +287,7 @@ pub fn randomseed<L: Lua>(l: &mut L) -> Ret {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::lua_api::fake::{FakeLua, Val, s};
+    use mercs2_formats::mod_runtime::lua::fake::{FakeLua, Val, s};
 
     fn call(f: Binding, args: Vec<Val>) -> (Ret, Vec<Val>) {
         let mut l = FakeLua::with(args);
