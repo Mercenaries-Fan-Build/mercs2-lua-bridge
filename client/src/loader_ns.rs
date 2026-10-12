@@ -18,7 +18,7 @@
 //! Every string goes back to Lua through `push_string`, so it is an interned Lua string and
 //! compares with `==` like any other.
 
-use mercs2_formats::mod_runtime::lua::{Lua, Ret, TBOOLEAN, TNUMBER, TSTRING, type_name};
+use mercs2_formats::mod_runtime::lua::{Lua, Ret, TBOOLEAN, TNIL, TNUMBER, TSTRING, type_name};
 use crate::store::Value;
 use std::cell::Cell;
 
@@ -70,6 +70,9 @@ pub trait LoaderHost {
     /// Set one variable in `lua_loader_data.ini` and persist the file ([`crate::store::Store::set`]
     /// then [`crate::store::Store::persist`]); a key or value the file cannot hold is an `Err`.
     fn save_var(&self, key: &[u8], value: Value) -> Result<(), String>;
+    /// Delete one variable from `lua_loader_data.ini` and persist the file; deleting a key that is not
+    /// set is not an error.
+    fn delete_var(&self, key: &[u8]) -> Result<(), String>;
     /// Read one variable, `None` when the key is not set.
     fn load_var(&self, key: &[u8]) -> Result<Option<Value>, String>;
     /// The highest load-ladder phase reached in the current load cycle and its name, or `None`
@@ -205,6 +208,12 @@ pub fn save_var<L: Lua, H: LoaderHost>(l: &mut L, host: &H) -> Ret {
         Err(e) => return Ret::Raise(e),
     };
     let tag = l.arg_type(1);
+    if tag == TNIL {
+        return match host.delete_var(&key) {
+            Ok(()) => Ret::Values(0),
+            Err(e) => host_err("SaveVar", e),
+        };
+    }
     let value = match tag {
         TNUMBER => l.arg_number(1).map(|n| Value::Number(f64::from(n as f32))),
         TBOOLEAN => l.arg_bool(1).map(Value::Bool),
@@ -213,7 +222,7 @@ pub fn save_var<L: Lua, H: LoaderHost>(l: &mut L, host: &H) -> Ret {
     };
     let Some(value) = value else {
         return Ret::Raise(format!(
-            "bad argument #2 to 'Loader.SaveVar' (number, string or boolean expected, got {})",
+            "bad argument #2 to 'Loader.SaveVar' (number, string, boolean or nil expected, got {})",
             type_name(tag)
         ));
     };
@@ -399,6 +408,12 @@ mod tests {
         }
         fn save_var(&self, key: &[u8], value: Value) -> Result<(), String> {
             self.with_store(|st| st.set(key, value))
+        }
+        fn delete_var(&self, key: &[u8]) -> Result<(), String> {
+            self.with_store(|st| {
+                st.remove(key);
+                Ok(())
+            })
         }
         fn load_var(&self, key: &[u8]) -> Result<Option<Value>, String> {
             self.with_store(|st| Ok(st.get(key).cloned()))
@@ -616,7 +631,6 @@ mod tests {
     fn save_var_rejects_unsupported_values_and_keys() {
         let host = FakeHost::default();
         assert!(raise_msg(call(save_var, &host, vec![s("k"), Val::Table])).contains("got table"));
-        assert!(raise_msg(call(save_var, &host, vec![s("k"), Val::Nil])).contains("got nil"));
         assert!(raise_msg(call(save_var, &host, vec![s("k")])).contains("got no value"));
         assert!(raise_msg(call(save_var, &host, vec![Val::Num(1.0), Val::Num(1.0)])).contains("string expected"));
         for bad in ["", "a=b", " lead", "trail\t", ";c", "#c", "new\nline"] {
@@ -628,6 +642,17 @@ mod tests {
         let long_val = "v".repeat(STR_MAX + 1);
         assert!(raise_msg(call(save_var, &host, vec![s("k"), s(&long_val)])).contains("2049 bytes"));
         assert!(raise_msg(call(load_var, &host, vec![])).contains("string expected, got no value"));
+    }
+
+    #[test]
+    fn save_var_nil_deletes_the_key() {
+        let host = FakeHost::default();
+        assert_eq!(call(save_var, &host, vec![s("k"), Val::Num(5.0)]).0, Ret::Values(0));
+        assert_eq!(call(load_var, &host, vec![s("k")]), (Ret::Values(1), vec![Val::Num(5.0)]));
+        assert_eq!(call(save_var, &host, vec![s("k"), Val::Nil]).0, Ret::Values(0));
+        assert_eq!(call(load_var, &host, vec![s("k")]), (Ret::Values(1), vec![Val::Nil]));
+        assert_eq!(call(save_var, &host, vec![s("never_set"), Val::Nil]).0, Ret::Values(0), "deleting a missing key is fine");
+        assert!(raise_msg(call(save_var, &host, vec![s("k")])).contains("got no value"), "an absent value still raises");
     }
 
     #[test]
