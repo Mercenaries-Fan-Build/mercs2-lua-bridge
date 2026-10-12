@@ -14,7 +14,7 @@ crate-type = ["cdylib"]
 
 [dependencies]
 # m2-sdk.dll's bindings (mercs2_formats::mod_runtime) and the load ladder.
-mercs2_formats = { path = "../../../tools/wad_simulator/crates/mercs2_formats" }
+mercs2_formats = "4.1.0"
 sha1 = "0.10"
 base64 = "0.22"
 
