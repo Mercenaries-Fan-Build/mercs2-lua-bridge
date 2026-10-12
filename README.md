@@ -5,7 +5,7 @@ run Lua chunks on the game thread, a script loader for boot-time, level-load and
 `Loader`, `Tcp` and `math` namespaces those scripts use.
 
 Originally written by **loganw234** (Wally) as `lua_bridge_DEV`, and maintained as a Shipment by
-Mercenaries Fan Build. Version 0.6.0 is a Rust rewrite on the shared m2-sdk runtime; see the
+Mercenaries Fan Build. Version 1.0.0 is a Rust rewrite on the shared m2-sdk runtime; see the
 [CHANGELOG](CHANGELOG.md) for what changed.
 
 > [!TIP]
