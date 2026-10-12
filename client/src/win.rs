@@ -318,6 +318,13 @@ impl LoaderHost for GameLoader<'_> {
         store.set(key, value)?;
         store.persist()
     }
+    fn delete_var(&self, key: &[u8]) -> Result<(), String> {
+        let mut store = self.b.store.lock().map_err(|_| "the variable store lock is poisoned".to_string())?;
+        if store.remove(key) {
+            store.persist()?;
+        }
+        Ok(())
+    }
     fn load_var(&self, key: &[u8]) -> Result<Option<Value>, String> {
         let store = self.b.store.lock().map_err(|_| "the variable store lock is poisoned".to_string())?;
         Ok(store.get(key).cloned())
