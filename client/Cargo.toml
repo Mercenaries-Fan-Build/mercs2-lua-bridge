@@ -1,0 +1,37 @@
+[package]
+name = "lua_bridge"
+version = "0.6.0"
+description = "Mercenaries 2 Lua bridge ASI: a live REPL and WebSocket into the game's Lua, the OnBoot/OnLoad/OnKey script loader, and the Loader, Tcp and math namespaces"
+edition = "2024"
+license = "MIT"
+publish = false
+
+# Standalone package: its own workspace root.
+[workspace]
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+# m2-sdk.dll's bindings (mercs2_formats::mod_runtime) and the load ladder.
+mercs2_formats = { path = "../../../tools/wad_simulator/crates/mercs2_formats" }
+sha1 = "0.10"
+base64 = "0.22"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Globalization",
+    "Win32_Storage_FileSystem",
+    "Win32_System_LibraryLoader",
+    "Win32_System_SystemInformation",
+    "Win32_System_SystemServices",
+    "Win32_System_Threading",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_WindowsAndMessaging",
+] }
+
+[profile.release]
+panic = "abort"
+lto = true
+codegen-units = 1
