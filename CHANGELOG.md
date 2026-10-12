@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.6.0
+## 1.0.0
 
 The bridge is rewritten in Rust and ships as the `lua-bridge` Shipment. Its file is now
 `scripts/lua_bridge.asi` (the old `lua_bridge_DEV.asi` must be removed; `qm build` refuses while it is
