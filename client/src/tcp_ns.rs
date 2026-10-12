@@ -8,7 +8,7 @@
 //! IPv4 address or `localhost`, a non-loopback address, a port outside 1..=65535, a refused or
 //! timed-out connect, a failed write.
 
-use crate::lua_api::{Lua, Ret, TNUMBER, TSTRING, type_name};
+use mercs2_formats::mod_runtime::lua::{Lua, Ret, TNUMBER, TSTRING, type_name};
 use std::io::Write;
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4, TcpStream};
 use std::time::Duration;
@@ -91,7 +91,7 @@ fn send_inner<L: Lua>(l: &L) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::lua_api::fake::{FakeLua, Val, s};
+    use mercs2_formats::mod_runtime::lua::fake::{FakeLua, Val, s};
     use std::io::Read;
     use std::net::TcpListener;
     use std::time::Instant;
