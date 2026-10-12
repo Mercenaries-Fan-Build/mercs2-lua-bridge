@@ -18,7 +18,7 @@ use crate::encoding;
 use crate::folders::{self, FOLDER_ON_BOOT, FOLDER_ON_LOAD, LoaderPaths, ProcessAnsi, Script, ScriptLoader, ScriptOutcome};
 use crate::keys::{self, KeyEvents};
 use crate::loader_ns::{self, LoaderHost, ScriptRun};
-use crate::lua_api::game;
+use mercs2_formats::mod_runtime::lua::game;
 use crate::math_ns;
 use crate::onkey::{self, OnKeyConfig, OnKeyEvent, OnKeyHooks, OnKeyRequest, OnKeyTable};
 use crate::phase::PhaseTracker;
