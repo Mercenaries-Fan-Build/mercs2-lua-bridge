@@ -3,7 +3,7 @@ format: 2
 shipment:
   name: lua-bridge
   title: Lua Bridge
-  version: 1.0.0
+  version: 1.1.0
   target: retail
   authors: [loganw234, Mercenaries Fan Build]
   description: A live Lua REPL and WebSocket into the running game, the OnBoot/OnLoad/OnKey script loader, and the Loader, Tcp and math Lua namespaces.
