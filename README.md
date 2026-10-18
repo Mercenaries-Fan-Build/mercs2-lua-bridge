@@ -167,7 +167,42 @@ loader_track_phase = 1
 loader_source_encoding = auto        ; auto | off
 watchdog_stuck_ms = 8000             ; 0 turns the watchdog off
 websocket_enabled = 1
+preimport =                          ; e.g. ess, ess_names
 ```
+
+### `preimport` — library modules every script can rely on
+
+A library Shipment ships its Lua as an `add_script` module and, by design, nothing imports it: Ess
+0.7.0 says so outright — *"Library only. Nothing runs until a Shipment that requires ess imports
+it."* Each consumer therefore had to ship a loose stub whose whole body was `import("ess")`, dropped
+in `OnLoad` and ordered only by a `0_` filename prefix. That restates a dependency the consumer's
+manifest already declares, and the ordering is convention with nothing enforcing it.
+
+`preimport` is that list, in order:
+
+```ini
+preimport = ess, ess_names
+```
+
+The bridge imports each one **before** any `OnBoot`/`OnLoad`/`OnKey` script or REPL chunk runs, so
+the ordering question disappears and no consumer needs a stub. The imports run before each loader
+folder and before each batch of queued chunks; `import` caches in `_MODULES`, so the repeat is cheap
+and it re-establishes the globals if the game has rebuilt `_G`.
+
+They deliberately do **not** run when a Lua state is first reported. `import` is
+`_SYS._IMPORT(getfenv(2), module)` and needs the engine's own module system (`_MODULES`, `_SYS`),
+which is not built that early — calling it there dereferences NULL inside the script host and kills
+the game at phase 0 of the load. The `math`/`assert` polyfill is safe at state capture only because
+it writes plain `_G` fields; `import` is not the same kind of call.
+
+Each name's outcome is logged once per Lua state. A module that ships in the level's script block
+(`blocks\VZ\scripts_vz_*.block`, where `add_script` puts it) **cannot be imported in the front
+end**, so a failure there is normal and logged as such; it imports once the level's scripts are
+resident. Names are checked when the file is read: only letters, digits and `_`, so a typo names
+itself instead of quietly shortening the list.
+
+The list is configuration rather than a built-in default, because a library Shipment declares the
+bridge as *its* dependency — the bridge names no library of its own accord.
 
 `loader_delay_ms` and `stack_diag` are gone: the first did nothing since 0.5.0, the second drove a
 diagnostic of the old executor. Delete them from an existing `lua_bridge.ini`.

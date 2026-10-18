@@ -1,5 +1,37 @@
 # Changelog
 
+## Unreleased
+
+### `preimport`: library modules imported before any script runs
+
+New `lua_bridge.ini` key, a comma-separated module list in order:
+
+```ini
+preimport = ess, ess_names
+```
+
+The bridge imports each module before any `OnBoot`/`OnLoad`/`OnKey` script or REPL chunk runs. A
+library Shipment ships its Lua as an `add_script` module that nothing imports on its own, so each
+consumer previously shipped a loose stub whose whole body was `import("ess")`, ordered only by a `0_`
+filename prefix — restating a dependency its manifest already declared, with nothing enforcing the
+order. Listing the modules here removes both problems.
+
+- Runs where the game is already executing Lua of its own: before a loader folder, and before a
+  batch of queued chunks. `import` caches in `_MODULES`, so the repeat is cheap, and it
+  re-establishes the globals if the game has rebuilt `_G`.
+- **Not** from the Lua-state callback. `import` is `_SYS._IMPORT(getfenv(2), module)` and needs the
+  engine's module system (`_MODULES`, `_SYS`), which is not built when a state is first reported:
+  calling it there is a NULL dereference in the script host (`C0000005` at `EIP=0x005AE362`,
+  `AV READ target=00000040`, stack entirely in the Lua VM), killing the game at phase 0 of 20. The
+  `math`/`assert` polyfill is safe there only because it writes plain `_G` fields.
+- Each name's outcome is logged once per Lua state. A module in the level's script block cannot be
+  imported in the front end; that is reported as the ordinary fact it is, and it imports once the
+  level's scripts are resident.
+- Module names are validated when the file is read (letters, digits and `_`), so a typo names itself
+  rather than silently shortening the list.
+- Empty by default: a library Shipment declares the bridge as its dependency, so the bridge names no
+  library of its own accord. Add the key to an existing `lua_bridge.ini` to use it.
+
 ## 1.0.0
 
 The bridge is rewritten in Rust and ships as the `lua-bridge` Shipment. Its file is now

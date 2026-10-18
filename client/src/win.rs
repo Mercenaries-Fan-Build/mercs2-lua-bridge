@@ -23,6 +23,7 @@ use crate::math_ns;
 use crate::onkey::{self, OnKeyConfig, OnKeyEvent, OnKeyHooks, OnKeyRequest, OnKeyTable};
 use crate::phase::PhaseTracker;
 use crate::polyfill::POLYFILL;
+use crate::preimport;
 use crate::pump::{Pump, TickHost};
 use crate::queue::{LogFn, Normalize, Origin, Queue};
 use crate::rearm::{Cycle, Flags};
@@ -71,6 +72,8 @@ struct Bridge {
     pump: Pump,
     cycle: Cycle,
     loader: ScriptLoader,
+    /// Keeps `preimport` logging to one report per Lua state.
+    preimport_log: preimport::Reporter,
 }
 
 fn bridge() -> &'static Bridge {
@@ -171,6 +174,7 @@ impl Bridge {
         let mode = self.cfg.loader_source_encoding;
         let mut prepare = || {
         polyfill(l);
+        preimport(l);
         Ok(())
     };
         let mut normalize = |path: &Path, bytes: Vec<u8>| normalize_bytes(mode, folder, &path.display().to_string(), &bytes);
@@ -361,6 +365,7 @@ impl TickHost for GameTick {
     }
     fn begin_batch(&mut self) {
         polyfill(self.l);
+        preimport(self.l);
     }
     fn exec(&mut self, code: &[u8]) -> Vec<u8> {
         unsafe { rt::lua_exec(self.l, code, RESULT_CAP) }.text
@@ -383,6 +388,37 @@ fn polyfill(l: *mut c_void) {
     let r = unsafe { rt::lua_exec(l, POLYFILL.as_bytes(), RESULT_CAP) };
     if r.status != rt::EXEC_OK {
         log(&format!("[!] lua_bridge: the polyfill failed on L={l:p}: {}", String::from_utf8_lossy(&r.text)));
+    }
+}
+
+/// Import each `preimport` module on `l`, in order, logging each outcome once per state.
+///
+/// Called only from where the game is already running Lua of its own — before a loader folder and
+/// before a batch of queued chunks — never from [`on_state`]. `import` needs the engine's module
+/// system, which is not built when a state is first reported; calling it there is a NULL
+/// dereference in the script host (see [`preimport`](crate::preimport) for the crash). `import`
+/// caches in `_MODULES`, so the repeat before each batch is cheap, and it re-establishes the
+/// globals if the game has rebuilt `_G` since.
+fn preimport(l: *mut c_void) {
+    let b = bridge();
+    if b.cfg.preimport.is_empty() {
+        return;
+    }
+    let report = b.preimport_log.should_report(l as usize);
+    for name in &b.cfg.preimport {
+        let r = unsafe { rt::lua_exec(l, preimport::chunk(name).as_bytes(), RESULT_CAP) };
+        if !report {
+            continue;
+        }
+        if r.status == rt::EXEC_OK {
+            log(&format!("[+] lua_bridge: preimport {name:?} on L={l:p}"));
+        } else {
+            log(&format!(
+                "[*] lua_bridge: preimport {name:?} did not import on L={l:p}: {} — expected in the \
+                 front end for a module that ships in the level's script block",
+                String::from_utf8_lossy(&r.text)
+            ));
+        }
     }
 }
 
@@ -601,6 +637,7 @@ fn start() -> Result<(), String> {
         pump: Pump::new(),
         cycle: Cycle::new(),
         loader,
+        preimport_log: preimport::Reporter::new(),
     };
     if BRIDGE.set(built).is_err() {
         return Err("the bridge was started twice".into());

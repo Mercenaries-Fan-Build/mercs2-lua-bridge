@@ -71,6 +71,16 @@ loader_track_phase = 1
 ; non-ASCII characters to CP1252, leaving ASCII and CP1252 files alone. off = only
 ; the byte-order mark is stripped. A UTF-16 file is refused either way.
 loader_source_encoding = auto
+
+; Engine Lua modules to import before any OnBoot/OnLoad/OnKey script or REPL chunk
+; runs, comma-separated, in order. A library Shipment ships its Lua as a module that
+; nothing imports on its own, so each consumer would otherwise need a loose stub whose
+; whole body is import(\"<module>\"). Listing the modules here runs those imports first,
+; so the globals they export are there for every script and no stub is needed. For the
+; Ess library this is: preimport = ess, ess_names
+; A module in the level's script block cannot be imported in the front end, so each
+; name's outcome is logged once per Lua state. Empty = import nothing.
+preimport =
 ";
 
 /// How `.lua` source bytes are prepared before the game's Lua compiles them (see `crate::encoding`).
@@ -111,6 +121,11 @@ pub struct Config {
     pub loader_track_phase: bool,
     /// `loader_source_encoding`: `auto` or `raw`/`off`.
     pub loader_source_encoding: EncodingMode,
+    /// `preimport`: engine Lua modules imported before any script or chunk runs, in order.
+    ///
+    /// Empty by default: a library Shipment declares the bridge as its dependency, so the bridge
+    /// names no library of its own accord (see [`crate::preimport`]).
+    pub preimport: Vec<String>,
 }
 
 impl Default for Config {
@@ -130,6 +145,7 @@ impl Default for Config {
             loader_rearm_on_menu: true,
             loader_track_phase: true,
             loader_source_encoding: EncodingMode::Auto,
+            preimport: Vec::new(),
         }
     }
 }
@@ -223,6 +239,21 @@ fn parse_host(key: &[u8], value: &[u8]) -> Result<Ipv4Addr, ConfigError> {
         .ok_or_else(|| invalid(key, value, HOST_EXPECTED))
 }
 
+/// `preimport`: a comma-separated module list. A name the generated `import()` chunk could not hold
+/// is an error naming it, so a typo is reported rather than quietly dropped from the list.
+fn parse_preimport(key: &[u8], value: &[u8]) -> Result<Vec<String>, ConfigError> {
+    let text = std::str::from_utf8(value).map_err(|_| ConfigError::InvalidValue {
+        key: String::from_utf8_lossy(key).into_owned(),
+        value: String::from_utf8_lossy(value).into_owned(),
+        expected: "a comma-separated list of module names (letters, digits and `_`)",
+    })?;
+    crate::preimport::parse_list(text).map_err(|_| ConfigError::InvalidValue {
+        key: String::from_utf8_lossy(key).into_owned(),
+        value: text.to_string(),
+        expected: "a comma-separated list of module names (letters, digits and `_`)",
+    })
+}
+
 fn parse_encoding(key: &[u8], value: &[u8]) -> Result<EncodingMode, ConfigError> {
     let is = |word: &str| value.eq_ignore_ascii_case(word.as_bytes());
     if is("auto") || is("1") || is("on") || is("true") {
@@ -283,6 +314,8 @@ fn apply(cfg: &mut Config, key: &[u8], value: &[u8]) -> Result<(), ConfigError> 
         cfg.loader_track_phase = parse_bool(key, value)?;
     } else if is("loader_source_encoding") {
         cfg.loader_source_encoding = parse_encoding(key, value)?;
+    } else if is("preimport") {
+        cfg.preimport = parse_preimport(key, value)?;
     } else {
         return Err(ConfigError::UnknownKey { key: String::from_utf8_lossy(key).into_owned() });
     }
@@ -347,6 +380,7 @@ mod tests {
                 "loader_rearm_on_menu",
                 "loader_track_phase",
                 "loader_source_encoding",
+                "preimport",
             ]
         );
     }
@@ -355,7 +389,7 @@ mod tests {
     fn default_ini_is_ascii() {
         assert!(DEFAULT_INI.is_ascii());
         assert!(DEFAULT_INI.starts_with("; lua-bridge configuration.\n"));
-        assert!(DEFAULT_INI.ends_with("loader_source_encoding = auto\n"));
+        assert!(DEFAULT_INI.ends_with("preimport =\n"));
     }
 
     #[test]
@@ -363,7 +397,8 @@ mod tests {
         let text = "host=0.0.0.0\nport=1\nloader_enabled=0\nloader_onboot=off\nloader_onload=FALSE\n\
                     loader_onkey_cooldown_ms=7\nwatchdog_stuck_ms=2147483647\n\
                     websocket_enabled=Off\nloader_onkey_require_focus=0\nloader_onkey_exact_modifiers=0\n\
-                    loader_rearm_on_menu=0\nloader_track_phase=0\nloader_source_encoding=raw\n";
+                    loader_rearm_on_menu=0\nloader_track_phase=0\nloader_source_encoding=raw\n\
+                    preimport=ess, ess_names\n";
         let cfg = parse(text.as_bytes()).unwrap();
         assert_eq!(
             cfg,
@@ -381,8 +416,20 @@ mod tests {
                 loader_rearm_on_menu: false,
                 loader_track_phase: false,
                 loader_source_encoding: EncodingMode::Raw,
+                preimport: vec!["ess".to_string(), "ess_names".to_string()],
             }
         );
+    }
+
+    #[test]
+    fn preimport_reads_a_list_and_refuses_a_name_a_chunk_cannot_hold() {
+        assert_eq!(parse(b"preimport = ess, ess_names").unwrap().preimport, ["ess", "ess_names"]);
+        assert_eq!(parse(b"preimport =").unwrap().preimport, Vec::<String>::new());
+        assert!(parse(b"").unwrap().preimport.is_empty(), "absent means import nothing");
+        // A typo must name itself rather than silently shorten the list.
+        for bad in ["preimport = ess names", "preimport = ess, a\"b", "preimport = ess.names"] {
+            assert!(matches!(err_of(bad), ConfigError::InvalidValue { .. }), "{bad}");
+        }
     }
 
     #[test]
