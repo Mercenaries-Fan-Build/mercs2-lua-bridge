@@ -14,7 +14,7 @@ load:
   requires:
     # The ASI imports m2-sdk.dll: its Lua host (the captured states, the namespaces, the chunk executor,
     # the game-thread tick) and its log stream. Without the DLL Windows refuses to load the ASI.
-    - { shipment: m2-sdk, version: "^0.4" }
+    - { shipment: m2-sdk, version: "^0.5" }
 
 # The C build of this bridge, installed by hand before it was a Shipment.
 supersedes:

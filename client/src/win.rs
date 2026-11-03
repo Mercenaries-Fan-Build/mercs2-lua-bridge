@@ -49,8 +49,8 @@ use windows_sys::Win32::System::SystemServices::DLL_PROCESS_ATTACH;
 use windows_sys::Win32::System::Threading::ExitProcess;
 use windows_sys::Win32::UI::WindowsAndMessaging::{MB_ICONERROR, MB_OK, MessageBoxW};
 
-/// The m2-sdk.dll release this ASI is built against (manifest.yaml requires `^0.4`).
-const SDK_BUILT: &str = "0.4.0";
+/// The m2-sdk.dll release this ASI is built against (manifest.yaml requires `^0.5`).
+const SDK_BUILT: &str = "0.5.0";
 const TITLE: &str = "lua-bridge";
 /// The longest result line a chunk produces.
 const RESULT_CAP: usize = 16 * 1024;
