@@ -325,9 +325,9 @@ checksum = "ce5d3ddc6d3fa000eb1536d85e147bfe31aacaba692ed6a876f95cb7c855be78"
 
 [[package]]
 name = "loadprobe"
-version = "2.3.1"
+version = "2.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6f3b749de7068aaea489b494e66b3cdffa20fac19ed49e59455d33a0857eed54"
+checksum = "e8b51061096e3f9534bf7c760f3438fab84fd943c16ccb47775d6f87f3676306"
 dependencies = [
  "clap",
  "colored",
@@ -337,7 +337,7 @@ dependencies = [
 
 [[package]]
 name = "lua_bridge"
-version = "1.1.0"
+version = "1.1.1"
 dependencies = [
  "base64",
  "mercs2_formats",
@@ -353,15 +353,17 @@ checksum = "cf8baf1c55e62ffcace7a9f06f4bd9cd3f0c4beb022d3b367256b91b87513d98"
 
 [[package]]
 name = "mercs2_formats"
-version = "4.1.0"
+version = "5.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ef5715b593bedd8bb2760dcfb959a11aec22b155d52b56d822c23b6e47f70c63"
+checksum = "e5244e2cfc258a82e48b4fe380f26da3b6d2529e2b9240e818879f3345ed587f"
 dependencies = [
  "aes",
  "cmac",
  "flate2",
  "gltf",
  "loadprobe",
+ "serde",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
