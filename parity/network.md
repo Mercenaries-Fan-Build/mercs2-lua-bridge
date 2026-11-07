@@ -1,7 +1,7 @@
 # Network parity: queue, raw-TCP REPL, WebSocket
 
 Source: `mods/lua-bridge-DEV/lua_bridge_DEV.c` (v0.5.4). Rust: `client/src/queue.rs`, `client/src/repl.rs`, `client/src/ws.rs`.
-Gates (run in `client/`): `cargo test --lib` exit 0 (39 of the tests are in these three modules), `cargo clippy --all-targets -- -D warnings` exit 0, `cargo check --target i686-pc-windows-gnu` exit 0.
+Gates (run in `client/`): `cargo test --lib` exit 0 (42 of the tests are in these three modules), `cargo clippy --all-targets -- -D warnings` exit 0, `cargo check --target i686-pc-windows-gnu` exit 0.
 
 | Behaviour | C lines | Rust item | Test |
 |---|---|---|---|
@@ -63,3 +63,13 @@ Gates (run in `client/`): `cargo test --lib` exit 0 (39 of the tests are in thes
 - **SO_REUSEADDR** (4690): not set. On Windows it lets another process bind the same port while the bridge holds it. Rust's std does not set it on Windows; on Unix std's `TcpListener::bind` sets it (Unix semantics only allow rebinding a TIME_WAIT port). Listen backlog is std's default, not 8 (4696). No windows-sys feature was added.
 - `peek` needs 4 bytes to recognise `GET ` (4757-4758, `pn >= 4`); a client whose first segment is shorter is treated as raw, as before.
 - Bytes after `\r\n\r\n` in the handshake read are discarded, as before (4221-4229).
+
+## Not in the C bridge
+
+| Behaviour | Rust item | Test |
+|---|---|---|
+| A frame that is a JSON object with a `type` goes to the debugger (`lua_debug::Inbound::classify`); anything else is a REPL request, including one with raw CP1252 bytes in `code` | `ws::serve_client`, `ws::DebugPort::request` | `debug_frames_reach_the_debugger_and_its_answers_reach_only_their_client`, `debug_frames_the_debugger_does_not_take_are_refused_here` |
+| The debugger's frames go to one client, through its outbox; an unknown, closed or over-backlog client is an error, and over-backlog disconnects it | `WsHub::send_to` | `debug_frames_reach_the_debugger_and_its_answers_reach_only_their_client`, `the_debug_sink_drops_a_client_whose_backlog_is_full` |
+| A typed frame that is not a valid debug request, or that the debugger does not take, is answered `debug.refused` when it has an `id`, and logged | `ws::serve_client` | `debug_frames_the_debugger_does_not_take_are_refused_here` |
+| The debugger is told when a client's connection ends | `ws::DebugPort::disconnected` | `debug_frames_reach_the_debugger_and_its_answers_reach_only_their_client`, `the_debug_sink_drops_a_client_whose_backlog_is_full` |
+| Client ids are `u32`; a connection after the last is refused and logged | `ws::serve_connection` | (no deterministic test) |
