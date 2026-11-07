@@ -7,7 +7,8 @@
 //! the game can rebuild `_G` after a state was captured), and the pump runs OnLoad's scripts first (once per load cycle, when the world-loaded milestone has been
 //! seen), then every queued chunk, and routes each result: `lua_bridge.log`, the raw-TCP session that
 //! asked, and for a loader-queued script (OnKey) the live log feed. The timestamps it keeps are what the
-//! watchdog reads.
+//! watchdog reads. While m2-sdk.dll's debugger holds the game thread paused no tick fires; its pause loop
+//! calls [`Pump::paused_tick`] instead, so queued chunks still run.
 
 use crate::queue::{Origin, Queue};
 use crate::watchdog::Snapshot;
@@ -75,8 +76,20 @@ impl Pump {
 
     /// One tick. `now` is read once for the timestamp; the host is only built when there is work.
     pub fn tick<H: TickHost>(&self, queue: &Queue, now: u32, host: impl FnOnce() -> H) {
+        self.run(queue, now, host, true);
+    }
+
+    /// One call from the debugger's pause loop, where m2-sdk.dll holds the game thread in the Lua hook: the
+    /// queued chunks run and the timestamps are kept as on a tick, so the watchdog sees a paused bridge that
+    /// drains as healthy and one that does not as stuck. OnLoad's scripts wait for the first tick after
+    /// the pause: they are the game's load-time setup, not a request.
+    pub fn paused_tick<H: TickHost>(&self, queue: &Queue, now: u32, host: impl FnOnce() -> H) {
+        self.run(queue, now, host, false);
+    }
+
+    fn run<H: TickHost>(&self, queue: &Queue, now: u32, host: impl FnOnce() -> H, onload: bool) {
         self.last_tick.store(stamp(now), Ordering::Relaxed);
-        if queue.pending() == 0 && !self.onload_due.load(Ordering::Acquire) {
+        if queue.pending() == 0 && !(onload && self.onload_due.load(Ordering::Acquire)) {
             return;
         }
         self.last_attempt.store(stamp(now), Ordering::Relaxed);
@@ -85,7 +98,7 @@ impl Pump {
             return;
         }
         host.begin_batch();
-        if self.onload_due.swap(false, Ordering::AcqRel) {
+        if onload && self.onload_due.swap(false, Ordering::AcqRel) {
             self.timed(host.now(), || host.run_onload());
         }
         while let Some(chunk) = queue.pop() {
@@ -232,6 +245,58 @@ mod tests {
         p.tick(&q, 20, || host(&r));
         assert_eq!(r.events.borrow()[..3], ["begin", "onload", "exec a"]);
         assert_eq!(q.pending(), 0);
+    }
+
+    #[test]
+    fn a_paused_tick_drains_the_queue_and_leaves_onload_for_the_next_tick() {
+        let (log, _) = recording_log();
+        let q = Queue::new(log);
+        let p = Pump::new();
+        q.push(b"a".to_vec(), Origin::Ws);
+        p.schedule_onload();
+        let r = Record { clock: Cell::new(1000), ..Record::default() };
+        p.paused_tick(&q, 1000, || host(&r));
+        assert_eq!(r.events.borrow()[..2], ["begin", "exec a"]);
+        assert_eq!(q.pending(), 0);
+        let s = p.snapshot(&q, 1000);
+        assert_eq!((s.last_tick, s.last_attempt), (1000, 1000));
+        assert!(s.last_progress > 1000);
+
+        // Nothing queued: a paused tick builds no host, even with OnLoad due.
+        p.paused_tick(&q, 1100, || host(&r));
+        assert_eq!(r.built.get(), 1);
+        p.tick(&q, 1200, || host(&r));
+        assert_eq!(r.events.borrow()[3..], ["begin", "onload"]);
+    }
+
+    #[test]
+    fn the_watchdog_sees_a_paused_bridge_that_drains_and_one_that_does_not() {
+        use crate::watchdog::{Stall, Watchdog};
+        const STUCK: u32 = 8000;
+        let (log, _) = recording_log();
+        let q = Queue::new(log);
+        let p = Pump::new();
+        let r = Record::default();
+        // Draining while paused: every chunk runs, so a chunk that has just arrived is no stall however
+        // long the pause has lasted.
+        let start = 1000 + 2 * STUCK;
+        for t in (1000..=start).step_by(1000) {
+            r.clock.set(t);
+            q.push(b"x".to_vec(), Origin::Ws);
+            p.paused_tick(&q, t, || host(&r));
+        }
+        q.push(b"just queued".to_vec(), Origin::Ws);
+        // A second on: the fake host's clock ran a few milliseconds past `start` while it drained.
+        assert_eq!(Watchdog::default().check(&p.snapshot(&q, start + 1000), STUCK), None);
+
+        // Paused on a state that cannot run chunks: work waits, and the watchdog says so.
+        r.unusable.set(true);
+        for t in (start..=start + STUCK + 1000).step_by(1000) {
+            r.clock.set(t);
+            p.paused_tick(&q, t, || host(&r));
+        }
+        let now = start + STUCK + 1000;
+        assert_eq!(Watchdog::default().check(&p.snapshot(&q, now), STUCK), Some(Stall::NotDraining));
     }
 
     #[test]
