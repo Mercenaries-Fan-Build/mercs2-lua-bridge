@@ -7,7 +7,8 @@
 //!    `lua_loader_printf.log` and `lua_loader_data.ini`;
 //! 3. the REPL listener (and the WebSocket upgrade on the same port);
 //! 4. the Lua host: `m2_lua_install`, the `Loader`, `Tcp` and `math` namespaces, the state and tick
-//!    callbacks, and the log listener for load phases and the world-loaded milestone;
+//!    callbacks, the debugger's paused callback and (with the WebSocket on) its sink, and the log listener
+//!    for load phases and the world-loaded milestone;
 //! 5. the key-event sampler and the watchdog.
 //!
 //! Any failure in 1–4 is fatal: logged, shown in a message box, and the process exits; the game never runs
@@ -31,7 +32,7 @@ use crate::repl;
 use crate::store::{Store, Value};
 use crate::tcp_ns;
 use crate::watchdog::{self, Watchdog};
-use crate::ws::WsHub;
+use crate::ws::{DebugPort, WsHub};
 use core::ffi::{c_char, c_int, c_void};
 use mercs2_formats::mod_runtime::{self as rt, LuaReg, ffi};
 use std::ffi::CString;
@@ -49,8 +50,9 @@ use windows_sys::Win32::System::SystemServices::DLL_PROCESS_ATTACH;
 use windows_sys::Win32::System::Threading::ExitProcess;
 use windows_sys::Win32::UI::WindowsAndMessaging::{MB_ICONERROR, MB_OK, MessageBoxW};
 
-/// The m2-sdk.dll release this ASI is built against (manifest.yaml requires `^0.5`).
-const SDK_BUILT: &str = "0.5.0";
+/// The m2-sdk.dll release this ASI is built against (manifest.yaml requires `>=0.6.0`, the first whose
+/// debugger speaks debug protocol 2).
+const SDK_BUILT: &str = "0.6.0";
 const TITLE: &str = "lua-bridge";
 /// The longest result line a chunk produces.
 const RESULT_CAP: usize = 16 * 1024;
@@ -427,6 +429,47 @@ unsafe extern "C" fn on_tick(l: *mut c_void, _ud: *mut c_void) {
     b.pump.tick(&b.queue, now(), || GameTick { l });
 }
 
+/// The debugger holds the game thread paused in the Lua hook on `l`: run what is queued.
+unsafe extern "C" fn on_paused(l: *mut c_void, _ud: *mut c_void) {
+    let b = bridge();
+    b.pump.paused_tick(&b.queue, now(), || GameTick { l });
+}
+
+/// The debug channel's far end: m2-sdk.dll's debugger.
+struct SdkDebugger;
+
+impl DebugPort for SdkDebugger {
+    fn request(&self, conn: u32, frame: &[u8]) -> Result<(), String> {
+        if rt::lua_debug_request(conn, frame) {
+            return Ok(());
+        }
+        Err("m2-sdk.dll did not take a debug request this bridge parsed: the two were built with different \
+             debug protocol code; install the m2-sdk version this bridge requires"
+            .into())
+    }
+    fn disconnected(&self, conn: u32) {
+        rt::lua_debug_disconnected(conn);
+    }
+}
+
+/// The debugger's sink: queue its frame for client `conn` alone. Called on the game thread with the
+/// debugger's lock held, so it only queues (and logs).
+unsafe extern "C" fn debug_sink(conn: u32, json: *const c_char, len: c_int, _ud: *mut c_void) -> c_int {
+    let ws = bridge().ws.as_ref().expect("the sink is registered only with the WebSocket on");
+    if json.is_null() || len < 0 {
+        log(&format!("[!] lua_bridge: the debugger handed client {conn} no frame"));
+        return 0;
+    }
+    let frame = unsafe { core::slice::from_raw_parts(json.cast::<u8>(), len as usize) };
+    match ws.send_to(conn, frame) {
+        Ok(()) => 1,
+        Err(why) => {
+            log(&format!("[!] lua_bridge: ws: debug frame for client {conn} not delivered: {why}"));
+            0
+        }
+    }
+}
+
 unsafe extern "C" fn on_state(l: *mut c_void, is_new_cycle: c_int, _ud: *mut c_void) {
     let b = bridge();
     log(&format!("[+] lua_bridge: Lua VM captured: L={l:p}"));
@@ -612,7 +655,7 @@ fn start() -> Result<(), String> {
     let queue = Queue::new(log_fn);
     let mode = cfg.loader_source_encoding;
     let normalize: Normalize = Arc::new(move |what: &str, bytes: &[u8]| normalize_bytes(mode, what, "chunk", bytes));
-    let ws = cfg.websocket_enabled.then(|| WsHub::new(queue.clone(), normalize.clone()));
+    let ws = cfg.websocket_enabled.then(|| WsHub::new(queue.clone(), normalize.clone(), Arc::new(SdkDebugger)));
     repl::start(cfg.host, cfg.port, queue.clone(), ws.clone(), normalize)
         .map_err(|e| format!("listening on {}:{}: {e}", cfg.host, cfg.port))?;
 
@@ -643,6 +686,15 @@ fn start() -> Result<(), String> {
         return Err("the bridge was started twice".into());
     }
 
+    // Before the host is installed: a debug request the listener has already taken is handled on the first
+    // tick, and its answer needs the sink.
+    unsafe {
+        rt::lua_debug_on_paused(on_paused, std::ptr::null_mut())?;
+        if bridge().ws.is_some() {
+            rt::lua_debug_set_sink(debug_sink, std::ptr::null_mut())?;
+            log("[*] lua_bridge: debug channel open on the WebSocket");
+        }
+    }
     rt::lua_install()?;
     log("[*] lua_bridge: Lua host installed (m2-sdk.dll)");
     rt::lua_add_namespace(c"Loader", &LOADER_REG)?;

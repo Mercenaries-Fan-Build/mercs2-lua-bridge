@@ -32,6 +32,30 @@ order. Listing the modules here removes both problems.
 - Empty by default: a library Shipment declares the bridge as its dependency, so the bridge names no
   library of its own accord. Add the key to an existing `lua_bridge.ini` to use it.
 
+### The Workshop debugger's channel on the WebSocket
+
+The WebSocket carries the Missions debugger's protocol (`mercs2_formats::lua_debug`) to m2-sdk.dll's
+debugger (`m2/m2_lua_debug.h`), beside the REPL. The bridge now requires m2-sdk `>=0.6.0`, the first
+release whose debugger speaks debug protocol 2 (0.5.1 was the first with the debugger's exports).
+
+- A frame that is a JSON object with a `type` is the debugger's; anything else is a REPL request,
+  unchanged. A REPL request whose `code` carries raw CP1252 bytes (not JSON text) stays the REPL's.
+- The debugger's answers and events go to the client that sent the request alone, through that client's
+  outbox. A frame that would pass the client's 4 MiB backlog disconnects it, and the debugger is told it
+  could not deliver, so a client never sees a gap in the events.
+- A typed frame that is not a valid debug request is answered `debug.refused` here when it has an `id`,
+  and logged.
+- A client's disconnect is passed to the debugger: if it held the debugger, the hook comes off and a
+  paused game resumes.
+- While paused, m2-sdk.dll calls the bridge from its pause loop, and queued chunks run as on a tick. OnLoad
+  waits for the first tick after the pause. The watchdog's timestamps are kept through the pause, so a
+  paused bridge that drains is quiet and one that does not is reported.
+- WebSocket client ids are 32-bit (the debugger's connection id); a connection after the last id is
+  refused and logged.
+- The channel speaks debug protocol 2: the bridge routes `debug.bindings` (the engine bindings the game can
+  break on) and `debug.watch` (change what a running or paused attach watches) to the debugger, and
+  `debug.attach`/`debug.breakpoints` carry engine breakpoints. A protocol 1 client is refused.
+
 ## 1.0.0
 
 The bridge is rewritten in Rust and ships as the `lua-bridge` Shipment. Its file is now

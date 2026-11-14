@@ -53,6 +53,21 @@ A connection to the same port that starts with `GET ` is a WebSocket (up to 16 c
 A chunk's own result is not sent back over the WebSocket; a script that wants to answer calls
 `Loader.WsSend`. Set `websocket_enabled = 0` to accept raw REPL connections only.
 
+### The debug channel
+
+The WebSocket also carries the Workshop Missions debugger (the protocol is
+`mercs2_formats::lua_debug`). A frame that is a JSON object with a `type` (`debug.hello`,
+`debug.attach`, …) goes to m2-sdk.dll's debugger, and everything it sends back (`debug.host`,
+`debug.ack`, `debug.refused`, and the run's events) goes to that client alone; any other frame is a REPL
+request as above. The bridge itself answers `debug.refused` to a typed frame that is not a valid debug
+request, when the frame has an `id`. When a client disconnects, the debugger is told: if that client held
+it, the hook comes off and a paused game resumes.
+
+While the debugger holds the game paused, queued REPL and WebSocket chunks still run. OnLoad's scripts, if
+they come due during a pause, run on the first tick after it. The watchdog keeps reporting a pause in which
+queued work does not drain. The debug channel needs the WebSocket: with `websocket_enabled = 0` there is
+none.
+
 ## Lua namespaces
 
 ### `Loader`

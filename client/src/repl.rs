@@ -316,12 +316,20 @@ mod tests {
         Arc::new(|_: &str, b: &[u8]| Ok(b.to_vec()))
     }
 
-    fn server_with(ws_on: bool, normalize: Normalize) -> (Queue, Option<WsHub>, SocketAddr, Lines) {
+    fn server_on(
+        ws_on: bool,
+        normalize: Normalize,
+        port: Arc<ws::tests::RecordingPort>,
+    ) -> (Queue, Option<WsHub>, SocketAddr, Lines) {
         let (log, lines) = recording_log();
         let q = Queue::new(log);
-        let hub = ws_on.then(|| WsHub::new(q.clone(), Arc::clone(&normalize)));
+        let hub = ws_on.then(|| WsHub::new(q.clone(), Arc::clone(&normalize), port));
         let s = start(Ipv4Addr::LOCALHOST, 0, q.clone(), hub.clone(), normalize).unwrap();
         (q, hub, s.local_addr(), lines)
+    }
+
+    fn server_with(ws_on: bool, normalize: Normalize) -> (Queue, Option<WsHub>, SocketAddr, Lines) {
+        server_on(ws_on, normalize, ws::tests::recording_port(Ok(())))
     }
 
     fn server(ws_on: bool) -> (Queue, Option<WsHub>, SocketAddr, Lines) {
@@ -745,6 +753,106 @@ mod tests {
         let mut b = [0u8; 1];
         assert_eq!(c.read(&mut b).unwrap(), 0);
         wait_clients(&hub, 0);
+    }
+
+    // --- The debug channel ----------------------------------------------------------------------
+
+    const HELLO: &[u8] = br#"{"type":"debug.hello","id":"h","protocol":1}"#;
+
+    /// A websocket server whose debugger answers every request with `answer`.
+    fn debug_server(answer: Result<(), String>) -> (Queue, WsHub, SocketAddr, Lines, Arc<ws::tests::RecordingPort>) {
+        let port = ws::tests::recording_port(answer);
+        let (q, hub, addr, lines) = server_on(true, identity(), Arc::clone(&port));
+        (q, hub.unwrap(), addr, lines, port)
+    }
+
+    /// Connect, say hello, and return the client's id as the debugger saw it.
+    fn debug_client(addr: SocketAddr, port: &ws::tests::RecordingPort) -> (TcpStream, u32) {
+        let before = port.requests.lock().unwrap().len();
+        let mut c = ws_connect(addr);
+        c.write_all(&masked(OP_TEXT, HELLO)).unwrap();
+        wait_until("the hello to reach the debugger", || port.requests.lock().unwrap().len() == before + 1);
+        let (conn, frame) = port.requests.lock().unwrap()[before].clone();
+        assert_eq!(frame, HELLO);
+        (c, conn)
+    }
+
+    #[test]
+    fn debug_frames_reach_the_debugger_and_its_answers_reach_only_their_client() {
+        let (q, hub, addr, _, port) = debug_server(Ok(()));
+        let (mut a, a_id) = debug_client(addr, &port);
+        let (mut b, b_id) = debug_client(addr, &port);
+        assert_ne!(a_id, b_id);
+        assert_eq!(q.pending(), 0, "a debug frame is not a REPL chunk");
+
+        let host = br#"{"type":"debug.host","id":"h"}"#;
+        hub.send_to(a_id, host).unwrap();
+        hub.broadcast("log", b"marker");
+        assert_eq!(read_frame(&mut a), (0x81, host.to_vec()));
+        assert_eq!(read_frame(&mut a).1, br#"{"type":"log","line":"marker"}"#);
+        assert_eq!(read_frame(&mut b).1, br#"{"type":"log","line":"marker"}"#, "b got nothing before the marker");
+
+        let unknown = a_id.max(b_id) + 1;
+        assert!(hub.send_to(unknown, host).unwrap_err().contains("not connected"));
+
+        // The debugger hears that a client has gone, and nothing more reaches it.
+        a.write_all(&masked(OP_CLOSE, b"\x03\xe8")).unwrap();
+        wait_until("the debugger to hear of a's disconnect", || port.gone.lock().unwrap().contains(&a_id));
+        assert!(hub.send_to(a_id, host).is_err());
+        assert!(!port.gone.lock().unwrap().contains(&b_id));
+        drop(b);
+        wait_until("the debugger to hear of b's disconnect", || port.gone.lock().unwrap().contains(&b_id));
+    }
+
+    #[test]
+    fn debug_frames_the_debugger_does_not_take_are_refused_here() {
+        let (q, hub, addr, lines, port) = debug_server(Err("held by workshop".into()));
+        let (mut c, _) = debug_client(addr, &port);
+        assert_eq!(read_frame(&mut c).1, br#"{"type":"debug.refused","id":"h","error":"held by workshop"}"#);
+        assert!(logged(&lines, "debug request id=h from client"));
+
+        // Not a valid debug request: refused here without reaching the debugger. Without an id there is
+        // nothing to answer, so the refusal that follows is the next frame.
+        c.write_all(&masked(OP_TEXT, br#"{"type":"debug.continue"}"#)).unwrap();
+        c.write_all(&masked(OP_TEXT, br#"{"type":"debug.step","id":"s1"}"#)).unwrap();
+        let (_, body) = read_frame(&mut c);
+        let refused = mercs2_formats::lua_debug::Event::parse(&body).unwrap();
+        assert!(
+            matches!(&refused, Some(mercs2_formats::lua_debug::Event::Refused { id, error }) if id == "s1" && error.contains("debug.step")),
+            "{refused:?}"
+        );
+        assert!(logged(&lines, "malformed debug frame"));
+        assert_eq!(port.requests.lock().unwrap().len(), 1, "only the hello reached the debugger");
+
+        // A REPL request whose code carries a raw CP1252 byte is still the REPL's.
+        c.write_all(&masked(OP_TEXT, b"{\"id\":\"r\",\"code\":\"s='caf\xe9'\"}")).unwrap();
+        assert_eq!(read_frame(&mut c).1, br#"{"type":"ack","id":"r","status":"queued"}"#);
+        wait_pending(&q, 1);
+        let chunk = q.pop().unwrap();
+        assert_eq!((chunk.code.as_slice(), chunk.origin), (&b"s='caf\xe9'"[..], Origin::Ws));
+        drop(hub);
+    }
+
+    #[test]
+    fn the_debug_sink_drops_a_client_whose_backlog_is_full() {
+        let (_, hub, addr, lines, port) = debug_server(Ok(()));
+        let (stalled, id) = debug_client(addr, &port);
+        wait_clients(&hub, 1);
+        let payload = vec![b'x'; 64 * 1024];
+        let mut sent = 0usize;
+        let err = loop {
+            match hub.send_to(id, &payload) {
+                Ok(()) => sent += payload.len(),
+                Err(e) => break e,
+            }
+            assert!(sent <= 64 * ws::BACKLOG_BYTES, "the backlog bound never applied");
+        };
+        assert!(err.contains("backlog full"), "{err}");
+        assert!(logged(&lines, "broadcast backlog full"));
+        wait_clients(&hub, 0);
+        wait_until("the debugger to hear of the drop", || port.gone.lock().unwrap().contains(&id));
+        assert!(hub.send_to(id, b"{}").is_err());
+        drop(stalled);
     }
 
     #[test]

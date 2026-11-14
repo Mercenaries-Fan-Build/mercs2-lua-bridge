@@ -8,23 +8,34 @@
 //!   bridge -> client   {"type":"ack","id":"q17abc","status":"rejected","error":"<why>"}
 //!   bridge -> client   {"type":"log","line":"<a Loader.Printf line>"}
 //!   bridge -> client   {"type":"ws","line":"<a Loader.WsSend line>"}
+//!   client -> bridge   {"type":"debug.<request>","id":"…",…}
+//!   bridge -> client   {"type":"debug.<answer or event>",…}
 //! ```
 //!
 //! Broadcast lines are game-side CP1252 text: bytes >= 0x80 go out as `\uXXXX` of their Unicode code
 //! point, so those frames are pure ASCII. The ack's `id` and `error` are UTF-8 text and are escaped
 //! as such.
 //!
+//! The debug channel is the Workshop debugger's protocol (`mercs2_formats::lua_debug`). A frame is
+//! routed by `lua_debug::Inbound::classify`: a JSON object with a `type` goes to the [`DebugPort`]
+//! (m2-sdk.dll's debugger in the game) tagged with the client's id, anything else is a REPL request
+//! as above. The debugger answers through [`WsHub::send_to`], to that client alone; a typed frame
+//! that is not a valid debug request, or that the debugger does not take, is answered here with
+//! `debug.refused` when it has an `id`. When a client's connection ends the debugger is told.
+//!
 //! Every client has a bounded outbox drained by its own sender thread, so a broadcaster (the game
 //! thread) never blocks on a socket or on a lock a socket write holds, and one slow client never
-//! delays another.
+//! delays another. Debug frames go through the same outbox, so the bridge's own refusals stay in
+//! order with what the debugger sent before them.
 
 use std::collections::VecDeque;
 use std::io::{self, Read, Write};
 use std::net::{Shutdown, TcpStream};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 
 use base64::Engine as _;
+use mercs2_formats::lua_debug::{Event as DebugEvent, Inbound};
 use sha1::{Digest, Sha1};
 
 use crate::queue::{Normalize, Origin, Queue, lock};
@@ -63,6 +74,8 @@ pub enum WsError {
     Protocol(String),
     /// The peer closed the connection (EOF or a close frame).
     Closed,
+    /// The bridge dropped the client (a frame for it would pass its backlog).
+    Dropped(String),
     Io(io::Error),
 }
 
@@ -72,6 +85,7 @@ impl std::fmt::Display for WsError {
             WsError::Handshake(m) => write!(f, "websocket handshake rejected: {m}"),
             WsError::Protocol(m) => write!(f, "websocket protocol error: {m}"),
             WsError::Closed => write!(f, "websocket peer closed the connection"),
+            WsError::Dropped(m) => write!(f, "the bridge dropped the client: {m}"),
             WsError::Io(e) => write!(f, "websocket I/O error: {e}"),
         }
     }
@@ -601,6 +615,15 @@ pub fn ack_rejected(id: &str, error: &str) -> Vec<u8> {
 // Client hub
 // ---------------------------------------------------------------------------------------------
 
+/// The debugger behind the debug channel: m2-sdk.dll's in the game. Called on a client's connection
+/// thread, with no hub lock held.
+pub trait DebugPort: Send + Sync {
+    /// Hand the debugger a debug request frame from client `conn`; `Err` with why it did not take it.
+    fn request(&self, conn: u32, frame: &[u8]) -> Result<(), String>;
+    /// Client `conn`'s connection has ended.
+    fn disconnected(&self, conn: u32);
+}
+
 /// Frames waiting to be sent to one client.
 struct Outbox {
     frames: VecDeque<Arc<Vec<u8>>>,
@@ -611,7 +634,7 @@ struct Outbox {
 /// One connected client. Broadcasts land in its outbox; its own sender thread drains the outbox to
 /// the socket, so nobody but that thread ever blocks on a slow peer.
 struct ClientConn {
-    id: u64,
+    id: u32,
     peer: String,
     outbox: Mutex<Outbox>,
     ready: Condvar,
@@ -622,12 +645,12 @@ struct ClientConn {
 }
 
 impl ClientConn {
-    /// Queue a frame. Fails with the bytes already queued when the frame would push the backlog
-    /// over [`BACKLOG_BYTES`].
-    fn enqueue(&self, frame: Arc<Vec<u8>>) -> Result<(), usize> {
+    /// Queue a frame: `Ok(true)` when queued, `Ok(false)` when the client is already closed. Fails
+    /// with the bytes already queued when the frame would push the backlog over [`BACKLOG_BYTES`].
+    fn enqueue(&self, frame: Arc<Vec<u8>>) -> Result<bool, usize> {
         let mut ob = lock(&self.outbox, "websocket outbox");
         if ob.closed {
-            return Ok(());
+            return Ok(false);
         }
         if ob.bytes + frame.len() > BACKLOG_BYTES {
             return Err(ob.bytes);
@@ -635,7 +658,7 @@ impl ClientConn {
         ob.bytes += frame.len();
         ob.frames.push_back(frame);
         self.ready.notify_one();
-        Ok(())
+        Ok(true)
     }
 
     /// Mark closed, wake the sender thread, shut the socket. Returns true for the call that closed
@@ -658,9 +681,10 @@ impl ClientConn {
 
 struct HubShared {
     clients: Mutex<Vec<Arc<ClientConn>>>,
-    next_id: AtomicU64,
+    next_id: AtomicU32,
     queue: Queue,
     normalize: Normalize,
+    debug: Arc<dyn DebugPort>,
 }
 
 /// The set of connected WebSocket clients. Cloning shares the hub.
@@ -670,15 +694,25 @@ pub struct WsHub {
 }
 
 impl WsHub {
-    pub fn new(queue: Queue, normalize: Normalize) -> WsHub {
+    pub fn new(queue: Queue, normalize: Normalize, debug: Arc<dyn DebugPort>) -> WsHub {
         WsHub {
             shared: Arc::new(HubShared {
                 clients: Mutex::new(Vec::new()),
-                next_id: AtomicU64::new(1),
+                next_id: AtomicU32::new(1),
                 queue,
                 normalize,
+                debug,
             }),
         }
+    }
+
+    /// Queue one text frame for client `conn` alone, the debugger's sink. Never touches a socket and
+    /// never calls the [`DebugPort`]. `Err` when the frame cannot be queued: the client is gone or
+    /// closed, or the frame would pass its [`BACKLOG_BYTES`] (which disconnects it, logged).
+    pub fn send_to(&self, conn: u32, payload: &[u8]) -> Result<(), String> {
+        let found = lock(&self.shared.clients, "websocket client list").iter().find(|c| c.id == conn).cloned();
+        let c = found.ok_or_else(|| format!("websocket client {conn} is not connected"))?;
+        send_one(&self.shared, &c, payload)
     }
 
     /// Queue `{"type":"<kind>","line":"<line>"}` for every connected client. Never touches a
@@ -701,20 +735,33 @@ impl WsHub {
     }
 }
 
+fn backlog_full(queued: usize, frame: usize) -> String {
+    format!(
+        "broadcast backlog full ({queued} bytes queued, a {frame}-byte frame would pass the \
+         {BACKLOG_BYTES}-byte limit)"
+    )
+}
+
 fn broadcast(shared: &HubShared, kind: &str, line: &[u8]) {
     let frame = Arc::new(encode_frame(OP_TEXT, &typed_line(kind, line)));
     let clients: Vec<Arc<ClientConn>> = lock(&shared.clients, "websocket client list").clone();
     for c in clients {
         if let Err(queued) = c.enqueue(Arc::clone(&frame)) {
-            disconnect(
-                shared,
-                &c,
-                &format!(
-                    "broadcast backlog full ({queued} bytes queued, a {}-byte frame would pass \
-                     the {BACKLOG_BYTES}-byte limit)",
-                    frame.len()
-                ),
-            );
+            disconnect(shared, &c, &backlog_full(queued, frame.len()));
+        }
+    }
+}
+
+/// Queue one text frame for `c` alone; see [`WsHub::send_to`].
+fn send_one(shared: &HubShared, c: &ClientConn, payload: &[u8]) -> Result<(), String> {
+    let frame = Arc::new(encode_frame(OP_TEXT, payload));
+    match c.enqueue(Arc::clone(&frame)) {
+        Ok(true) => Ok(()),
+        Ok(false) => Err(format!("websocket client {} is closed", c.id)),
+        Err(queued) => {
+            let why = backlog_full(queued, frame.len());
+            disconnect(shared, c, &why);
+            Err(why)
         }
     }
 }
@@ -753,8 +800,12 @@ fn serve_connection(shared: &Arc<HubShared>, mut stream: TcpStream) {
             return;
         }
     };
+    let Ok(id) = shared.next_id.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| n.checked_add(1)) else {
+        log(&format!("[!] lua_bridge: ws: refused {peer}: every websocket client id has been used"));
+        return;
+    };
     let conn = Arc::new(ClientConn {
-        id: shared.next_id.fetch_add(1, Ordering::Relaxed),
+        id,
         peer,
         outbox: Mutex::new(Outbox {
             frames: VecDeque::new(),
@@ -814,6 +865,7 @@ fn serve_connection(shared: &Arc<HubShared>, mut stream: TcpStream) {
         other => other.to_string(),
     };
     disconnect(shared, &conn, &why);
+    shared.debug.disconnected(conn.id);
 }
 
 fn write_raw(conn: &ClientConn, bytes: &[u8]) -> io::Result<()> {
@@ -857,6 +909,34 @@ fn serve_client(shared: &HubShared, mut reader: TcpStream, conn: &ClientConn) ->
             Ok(m) => m,
             Err(e) => return e,
         };
+        let inbound = Inbound::classify(&msg);
+        let refusal = match &inbound {
+            Inbound::Repl => None,
+            Inbound::Debug(req) => shared.debug.request(conn.id, &msg).err().map(|why| {
+                shared.queue.log(&format!(
+                    "[!] lua_bridge: ws: debug request id={} from client {} refused: {why}",
+                    req.id(),
+                    conn.id
+                ));
+                DebugEvent::Refused { id: req.id().to_string(), error: why }
+            }),
+            Inbound::Malformed { error, .. } => {
+                shared.queue.log(&format!(
+                    "[!] lua_bridge: ws: malformed debug frame ({} bytes) from client {}: {error}",
+                    msg.len(),
+                    conn.id
+                ));
+                inbound.refusal()
+            }
+        };
+        if let Some(r) = refusal
+            && let Err(why) = send_one(shared, conn, r.to_json().as_bytes())
+        {
+            return WsError::Dropped(why);
+        }
+        if !matches!(inbound, Inbound::Repl) {
+            continue;
+        }
         let req = match parse_request(&msg) {
             Ok(r) => r,
             Err(why) => {
@@ -1108,6 +1188,27 @@ pub(crate) mod tests {
     /// A JSON `\uXXXX` escape for the given hex digits.
     pub(crate) fn esc(hex: &str) -> String {
         format!("{}u{hex}", '\\')
+    }
+
+    /// A [`DebugPort`] that records what reaches it and answers every request with `answer`.
+    pub(crate) struct RecordingPort {
+        pub(crate) requests: Mutex<Vec<(u32, Vec<u8>)>>,
+        pub(crate) gone: Mutex<Vec<u32>>,
+        answer: Result<(), String>,
+    }
+
+    impl DebugPort for RecordingPort {
+        fn request(&self, conn: u32, frame: &[u8]) -> Result<(), String> {
+            self.requests.lock().unwrap().push((conn, frame.to_vec()));
+            self.answer.clone()
+        }
+        fn disconnected(&self, conn: u32) {
+            self.gone.lock().unwrap().push(conn);
+        }
+    }
+
+    pub(crate) fn recording_port(answer: Result<(), String>) -> Arc<RecordingPort> {
+        Arc::new(RecordingPort { requests: Mutex::new(Vec::new()), gone: Mutex::new(Vec::new()), answer })
     }
 
     #[test]

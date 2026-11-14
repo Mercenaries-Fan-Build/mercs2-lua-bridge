@@ -3,7 +3,7 @@ format: 2
 shipment:
   name: lua-bridge
   title: Lua Bridge
-  version: 1.1.1
+  version: 1.2.0
   target: retail
   authors: [loganw234, Mercenaries Fan Build]
   description: A live Lua REPL and WebSocket into the running game, the OnBoot/OnLoad/OnKey script loader, and the Loader, Tcp and math Lua namespaces.
@@ -13,8 +13,9 @@ shipment:
 load:
   requires:
     # The ASI imports m2-sdk.dll: its Lua host (the captured states, the namespaces, the chunk executor,
-    # the game-thread tick) and its log stream. Without the DLL Windows refuses to load the ASI.
-    - { shipment: m2-sdk, version: "^0.5" }
+    # the game-thread tick), its debugger (first in 0.5.1; debug protocol 2 in 0.6.0) and its log stream.
+    # Without the DLL, or with one that lacks an export the ASI imports, Windows refuses to load the ASI.
+    - { shipment: m2-sdk, version: ">=0.6.0" }
 
 # The C build of this bridge, installed by hand before it was a Shipment.
 supersedes:
