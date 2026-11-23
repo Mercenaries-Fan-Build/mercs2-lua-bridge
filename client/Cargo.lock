@@ -343,7 +343,7 @@ dependencies = [
 
 [[package]]
 name = "lua_bridge"
-version = "1.2.0"
+version = "1.2.1"
 dependencies = [
  "base64",
  "mercs2_formats",
